@@ -30,6 +30,7 @@ class AlarmAudioService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var autoSilenceTimer: CountDownTimer? = null
     private var currentAlarm: AlarmEntity? = null
+    private var startJob: kotlinx.coroutines.Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -40,13 +41,17 @@ class AlarmAudioService : Service() {
             return START_NOT_STICKY
         }
 
+        // Stop any existing playback/timer before starting new alarm audio
+        startJob?.cancel()
+        stopAudio()
+
         // Acquire WakeLock to keep CPU active while ringing
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SyncAlarm:AudioServiceLock").apply {
             acquire(5 * 60 * 1000L) // 5 minutes max
         }
 
-        CoroutineScope(Dispatchers.IO).launch {
+        startJob = CoroutineScope(Dispatchers.IO).launch {
             val db = AppDatabase.getInstance(applicationContext)
             val alarm = db.alarmDao().getAlarmById(alarmId)
             if (alarm == null) {
@@ -56,11 +61,14 @@ class AlarmAudioService : Service() {
 
             currentAlarm = alarm
 
-            // Start foreground with high-priority alarm notification
+            // Ensure channels are up to date (and legacy noisy channel is deleted)
+            AlarmNotificationManager.createNotificationChannels(applicationContext)
+
+            // Start foreground with high-priority silent alarm notification
             val notification = AlarmNotificationManager.buildRingingNotification(applicationContext, alarm)
             startForeground(NOTIFICATION_ID, notification)
 
-            // Start audio & vibration
+            // Start audio & vibration on Main thread, stopping any prior player first
             launch(Dispatchers.Main) {
                 startAudioAndVibration(alarm)
                 startAutoSilenceTimer(alarm)
@@ -71,6 +79,16 @@ class AlarmAudioService : Service() {
     }
 
     private fun startAudioAndVibration(alarm: AlarmEntity) {
+        try {
+            mediaPlayer?.stop()
+            mediaPlayer?.release()
+        } catch (_: Exception) {}
+        mediaPlayer = null
+        try {
+            vibrator?.cancel()
+        } catch (_: Exception) {}
+        vibrator = null
+
         try {
             mediaPlayer = MediaPlayer().apply {
                 AlarmSoundSynthesizer.setMediaPlayerDataSource(

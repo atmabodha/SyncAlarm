@@ -17,7 +17,8 @@ import com.example.data.model.CalendarMeeting
 
 object AlarmNotificationManager {
 
-    const val CHANNEL_RINGING_ID = "sync_alarm_ringing_channel"
+    private const val LEGACY_CHANNEL_RINGING_ID = "sync_alarm_ringing_channel"
+    const val CHANNEL_RINGING_ID = "sync_alarm_ringing_silent_v2"
     const val CHANNEL_UPCOMING_ID = "sync_alarm_upcoming_channel"
     const val CHANNEL_PROMPTS_ID = "sync_alarm_calendar_prompts_channel"
 
@@ -42,21 +43,20 @@ object AlarmNotificationManager {
             val notificationManager =
                 context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-            // 1. Ringing Channel
+            // Remove legacy channel that had a default notification sound attached
+            notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_RINGING_ID)
+
+            // 1. Ringing Channel (Silent channel because AlarmAudioService plays the selected tone via MediaPlayer)
             val ringingChannel = NotificationChannel(
                 CHANNEL_RINGING_ID,
                 "Alarm Alerts",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Urgent audible alarms and full-screen notifications"
+                description = "Full-screen alarm notifications (audio handled by AlarmAudioService)"
                 setBypassDnd(true)
-                enableVibration(true)
+                enableVibration(false)
+                setSound(null, null)
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-                val audioAttributes = AudioAttributes.Builder()
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .build()
-                setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM), audioAttributes)
             }
 
             // 2. Upcoming Alarms Channel
@@ -345,6 +345,9 @@ object AlarmNotificationManager {
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setSilent(true)
+            .setSound(null)
+            .setDefaults(0)
             .setFullScreenIntent(fullScreenPendingIntent, true)
             .setOngoing(true)
             .setAutoCancel(false)

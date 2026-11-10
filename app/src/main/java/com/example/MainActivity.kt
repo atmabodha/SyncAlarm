@@ -274,6 +274,11 @@ fun MainAppContent(viewModel: AlarmViewModel) {
                         showAddEditDialog = false
                         editingAlarm = null
                     },
+                    onDelete = { alarm ->
+                        viewModel.deleteAlarm(alarm)
+                        showAddEditDialog = false
+                        editingAlarm = null
+                    },
                     onImportCustomMp3 = { uri, onImported ->
                         viewModel.importCustomAudio(uri, onImported)
                     },

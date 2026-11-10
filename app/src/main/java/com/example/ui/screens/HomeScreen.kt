@@ -414,6 +414,9 @@ fun AlarmCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
@@ -436,7 +439,9 @@ fun AlarmCard(
                     Text(
                         text = alarm.getRepeatDaysSummary(),
                         style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary
+                        color = TextSecondary,
+                        maxLines = 2,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                     )
                 }
 
@@ -452,7 +457,7 @@ fun AlarmCard(
                         onClick = onDelete,
                         modifier = Modifier.size(36.dp).testTag("delete_alarm_${alarm.id}")
                     ) {
-                        Icon(imageVector = Icons.Default.Delete, contentDescription = "Delete", tint = AlertCoral.copy(alpha = 0.8f), modifier = Modifier.size(18.dp))
+                        Icon(imageVector = Icons.Default.Delete, contentDescription = "Delete", tint = AlertCoral.copy(alpha = 0.85f), modifier = Modifier.size(18.dp))
                     }
                 }
             }

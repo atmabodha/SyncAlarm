@@ -91,6 +91,7 @@ fun AddEditAlarmDialog(
     soundOptions: List<AlarmSoundOption>,
     onDismissRequest: () -> Unit,
     onSave: (AlarmEntity) -> Unit,
+    onDelete: ((AlarmEntity) -> Unit)? = null,
     onImportCustomMp3: (Uri, (AlarmSoundOption) -> Unit) -> Unit,
     onPreviewTone: (String?, String?, Float) -> Unit,
     onStopPreview: () -> Unit
@@ -634,6 +635,26 @@ fun AddEditAlarmDialog(
                         Icon(imageVector = Icons.Default.Check, contentDescription = null)
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("Save Alarm")
+                    }
+                }
+
+                if (initialAlarm != null && onDelete != null) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedButton(
+                        onClick = {
+                            onStopPreview()
+                            onDelete(initialAlarm)
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = com.example.ui.theme.AlertCoral
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("dialog_delete_alarm_button")
+                    ) {
+                        Text("Delete Alarm", fontWeight = FontWeight.SemiBold)
                     }
                 }
 
