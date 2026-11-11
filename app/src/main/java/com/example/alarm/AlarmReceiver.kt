@@ -24,13 +24,17 @@ class AlarmReceiver : BroadcastReceiver() {
             context.startService(serviceIntent)
         }
 
-        // 2. Launch full-screen ringing activity
-        val activityIntent = Intent(context, AlarmRingingActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                    Intent.FLAG_ACTIVITY_NO_USER_ACTION
-            putExtra(AlarmNotificationManager.EXTRA_ALARM_ID, alarmId)
+        // 2. Launch full-screen ringing activity over lock screen
+        try {
+            val activityIntent = Intent(context, AlarmRingingActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra(AlarmNotificationManager.EXTRA_ALARM_ID, alarmId)
+            }
+            context.startActivity(activityIntent)
+        } catch (e: Exception) {
+            Log.w("AlarmReceiver", "Activity launch delegated to fullScreenIntent: ${e.message}")
         }
-        context.startActivity(activityIntent)
     }
 }

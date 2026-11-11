@@ -55,6 +55,9 @@ object AlarmSoundSynthesizer {
 
     fun getSynthesizedUri(title: String): String = "synthesized://$title"
 
+    @Volatile
+    private var cachedSystemSounds: List<AlarmSoundOption>? = null
+
     /**
      * Loads all sound options:
      * 1. User's custom added MP3/audio files
@@ -70,39 +73,44 @@ object AlarmSoundSynthesizer {
         // 1. Custom MP3s added by user
         result.addAll(customTones)
 
-        // 2. Query default phone ringtones & alarm sounds from RingtoneManager
-        val seenUris = mutableSetOf<String>()
-        val types = listOf(
-            RingtoneManager.TYPE_ALARM to "Phone Alarm",
-            RingtoneManager.TYPE_RINGTONE to "Phone Ringtone",
-            RingtoneManager.TYPE_NOTIFICATION to "Phone Notification"
-        )
+        // 2. Query default phone ringtones & alarm sounds from RingtoneManager (cached & cursors closed)
+        val systemTones = cachedSystemSounds ?: run {
+            val loaded = mutableListOf<AlarmSoundOption>()
+            val seenUris = mutableSetOf<String>()
+            val types = listOf(
+                RingtoneManager.TYPE_ALARM to "Phone Alarm",
+                RingtoneManager.TYPE_RINGTONE to "Phone Ringtone",
+                RingtoneManager.TYPE_NOTIFICATION to "Phone Notification"
+            )
 
-        for ((type, categoryLabel) in types) {
-            try {
-                val manager = RingtoneManager(context)
-                manager.setType(type)
-                val cursor: Cursor? = manager.cursor
-                if (cursor != null) {
-                    while (cursor.moveToNext()) {
-                        val pos = cursor.position
-                        val title = cursor.getString(RingtoneManager.TITLE_COLUMN_INDEX) ?: "System Tone"
-                        val ringtoneUri = manager.getRingtoneUri(pos)?.toString() ?: continue
-                        if (seenUris.add(ringtoneUri)) {
-                            result.add(
-                                AlarmSoundOption(
-                                    title = title,
-                                    uri = ringtoneUri,
-                                    category = categoryLabel
+            for ((type, categoryLabel) in types) {
+                try {
+                    val manager = RingtoneManager(context.applicationContext)
+                    manager.setType(type)
+                    manager.cursor?.use { cursor ->
+                        while (cursor.moveToNext()) {
+                            val pos = cursor.position
+                            val title = cursor.getString(RingtoneManager.TITLE_COLUMN_INDEX) ?: "System Tone"
+                            val ringtoneUri = manager.getRingtoneUri(pos)?.toString() ?: continue
+                            if (seenUris.add(ringtoneUri)) {
+                                loaded.add(
+                                    AlarmSoundOption(
+                                        title = title,
+                                        uri = ringtoneUri,
+                                        category = categoryLabel
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
+                } catch (e: Exception) {
+                    Log.w("AlarmSoundSynthesizer", "Could not query RingtoneManager for type $type: ${e.message}")
                 }
-            } catch (e: Exception) {
-                Log.w("AlarmSoundSynthesizer", "Could not query RingtoneManager for type $type: ${e.message}")
             }
+            cachedSystemSounds = loaded
+            loaded
         }
+        result.addAll(systemTones)
 
         // 3. Built-in synthesized alarm tones
         for (toneName in AVAILABLE_TONES) {

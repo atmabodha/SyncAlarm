@@ -73,16 +73,19 @@ import java.util.Locale
 
 class AlarmRingingActivity : ComponentActivity() {
 
+    private var currentAlarmId by androidx.compose.runtime.mutableLongStateOf(-1L)
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        turnScreenOnOverLockscreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        turnScreenOnAndKeyguard()
 
-        val alarmId = intent.getLongExtra(AlarmNotificationManager.EXTRA_ALARM_ID, -1L)
+        currentAlarmId = intent?.getLongExtra(AlarmNotificationManager.EXTRA_ALARM_ID, -1L) ?: -1L
 
         setContent {
             SyncAlarmTheme {
-                var alarm by remember { mutableStateOf<AlarmEntity?>(null) }
+                val alarmId = currentAlarmId
+                var alarm by remember(alarmId) { mutableStateOf<AlarmEntity?>(null) }
 
                 LaunchedEffect(alarmId) {
                     if (alarmId != -1L) {
@@ -101,7 +104,7 @@ class AlarmRingingActivity : ComponentActivity() {
                             putExtra(AlarmNotificationManager.EXTRA_ALARM_ID, alarmId)
                         }
                         sendBroadcast(dismissIntent)
-                        finish()
+                        finishAndRemoveTask()
                     },
                     onSnooze = {
                         val snoozeIntent = Intent(this@AlarmRingingActivity, AlarmActionReceiver::class.java).apply {
@@ -109,29 +112,40 @@ class AlarmRingingActivity : ComponentActivity() {
                             putExtra(AlarmNotificationManager.EXTRA_ALARM_ID, alarmId)
                         }
                         sendBroadcast(snoozeIntent)
-                        finish()
+                        finishAndRemoveTask()
                     }
                 )
             }
         }
     }
 
-    private fun turnScreenOnAndKeyguard() {
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        turnScreenOnOverLockscreen()
+        val newId = intent.getLongExtra(AlarmNotificationManager.EXTRA_ALARM_ID, -1L)
+        if (newId != -1L) {
+            currentAlarmId = newId
+        }
+    }
+
+    /**
+     * Displays the alarm screen directly ON TOP of the lock screen and wakes the display
+     * WITHOUT calling requestDismissKeyguard, so the user never has to enter a PIN/pattern/biometric
+     * just to see, snooze, or dismiss the ringing alarm.
+     */
+    private fun turnScreenOnOverLockscreen() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
-            val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
-            keyguardManager.requestDismissKeyguard(this, null)
-        } else {
-            @Suppress("DEPRECATION")
-            window.addFlags(
-                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                        WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
-                        WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
-                        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
-            )
         }
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        @Suppress("DEPRECATION")
+        window.addFlags(
+            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                    WindowManager.LayoutParams.FLAG_ALLOW_LOCK_WHILE_SCREEN_ON
+        )
     }
 }
 

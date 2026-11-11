@@ -73,10 +73,11 @@ object AlarmNotificationManager {
             val promptsChannel = NotificationChannel(
                 CHANNEL_PROMPTS_ID,
                 "Calendar Meeting Alarms",
-                NotificationManager.IMPORTANCE_HIGH
+                NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
                 description = "Interactive notifications to schedule or remove alarms for detected meetings"
-                enableVibration(true)
+                enableVibration(false)
+                setSound(null, null)
                 setShowBadge(true)
             }
 
@@ -159,7 +160,8 @@ object AlarmNotificationManager {
                     "Meeting: ${meeting.title}\nStarts: ${meeting.getFormattedStartTime()}$recurrenceInfo\nChoose alarm gap before meeting:"
                 )
             )
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setSilent(true)
             .setContentIntent(pContentIntent)
             .setAutoCancel(true)
             .addAction(android.R.drawable.ic_lock_idle_alarm, "5 Mins Before", pIntent5m)
@@ -223,7 +225,8 @@ object AlarmNotificationManager {
                     "\"${alarm.title}\" was deleted from Google Calendar.\nWould you like to remove the scheduled ${alarm.getFormattedTime()} alarm?"
                 )
             )
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setSilent(true)
             .setContentIntent(pContentIntent)
             .setAutoCancel(true)
             .addAction(android.R.drawable.ic_menu_delete, "Remove Alarm", pRemoveIntent)
@@ -236,7 +239,7 @@ object AlarmNotificationManager {
     }
 
     /**
-     * Shows persistent Upcoming Alarm notification with a "Dismiss" action button.
+     * Shows Upcoming Alarm notification with a "Dismiss" action button.
      */
     fun postUpcomingAlarmNotification(context: Context, alarm: AlarmEntity) {
         val notifManager = NotificationManagerCompat.from(context)
@@ -270,7 +273,8 @@ object AlarmNotificationManager {
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle("Upcoming Alarm: ${alarm.title}")
             .setContentText("Alarm set for $triggerTimeStr")
-            .setOngoing(true)
+            .setOngoing(false)
+            .setSilent(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(pContentIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Dismiss", pDismissIntent)
@@ -301,15 +305,20 @@ object AlarmNotificationManager {
 
     /**
      * Builds the active ringing notification with full screen intent, Snooze & Dismiss buttons.
+     * Note: Do NOT call .setSilent(true) on the builder because Android suppresses fullScreenIntent
+     * when a notification is marked silent; instead CHANNEL_RINGING_ID has setSound(null, null)
+     * so the notification makes no extra sound while still launching AlarmRingingActivity over the lockscreen.
      */
     fun buildRingingNotification(context: Context, alarm: AlarmEntity): Notification {
         val fullScreenIntent = Intent(context, AlarmRingingActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_USER_ACTION
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra(EXTRA_ALARM_ID, alarm.id)
         }
         val fullScreenPendingIntent = PendingIntent.getActivity(
             context,
-            alarm.id.toInt(),
+            alarm.id.toInt() + 5000,
             fullScreenIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -345,9 +354,6 @@ object AlarmNotificationManager {
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setSilent(true)
-            .setSound(null)
-            .setDefaults(0)
             .setFullScreenIntent(fullScreenPendingIntent, true)
             .setOngoing(true)
             .setAutoCancel(false)

@@ -15,10 +15,15 @@ import com.example.data.model.CalendarMeeting
 import com.example.data.repository.SettingsRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.Calendar
 
@@ -26,6 +31,11 @@ class CalendarSyncManager(private val context: Context) {
 
     private val settingsRepo = SettingsRepository(context)
     private val db = AppDatabase.getInstance(context)
+    private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val syncMutex = Mutex()
+    private var observerDebounceJob: Job? = null
+    @Volatile
+    private var lastManualSyncRequestMillis: Long = 0L
 
     private val simulatedMeetings = mutableListOf<CalendarMeeting>()
 
@@ -53,9 +63,12 @@ class CalendarSyncManager(private val context: Context) {
             val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
                 override fun onChange(selfChange: Boolean, uri: Uri?) {
                     super.onChange(selfChange, uri)
-                    Log.d("CalendarSyncManager", "Calendar ContentObserver triggered onChange: $uri")
-                    CoroutineScope(Dispatchers.IO).launch {
-                        syncCalendarEvents(forcePrompt = true)
+                    // Debounce calendar provider change notifications and NEVER call requestSystemCalendarSync()
+                    // from inside onChange, which would cause an infinite sync/notification loop.
+                    observerDebounceJob?.cancel()
+                    observerDebounceJob = syncScope.launch {
+                        delay(3000L)
+                        syncCalendarEvents(forcePrompt = false)
                     }
                 }
             }
@@ -115,10 +128,14 @@ class CalendarSyncManager(private val context: Context) {
     }
 
     fun requestSystemCalendarSync() {
+        val now = System.currentTimeMillis()
+        if (now - lastManualSyncRequestMillis < 60_000L) {
+            return
+        }
+        lastManualSyncRequestMillis = now
         try {
             val extras = android.os.Bundle().apply {
                 putBoolean(android.content.ContentResolver.SYNC_EXTRAS_MANUAL, true)
-                putBoolean(android.content.ContentResolver.SYNC_EXTRAS_EXPEDITED, true)
             }
             android.content.ContentResolver.requestSync(null, CalendarContract.AUTHORITY, extras)
         } catch (e: Exception) {
@@ -316,11 +333,12 @@ class CalendarSyncManager(private val context: Context) {
     )
 
     suspend fun syncCalendarEvents(forcePrompt: Boolean = false): List<CalendarMeeting> = withContext(Dispatchers.IO) {
-        val meetings = mutableListOf<CalendarMeeting>()
-        val seenEventIdsFromInstances = mutableSetOf<Long>()
-        val seenInstanceKeys = mutableSetOf<String>()
-        val candidates = mutableListOf<RawCandidateOccurrence>()
-        val hasPermission = hasCalendarPermission()
+        syncMutex.withLock {
+            val meetings = mutableListOf<CalendarMeeting>()
+            val seenEventIdsFromInstances = mutableSetOf<Long>()
+            val seenInstanceKeys = mutableSetOf<String>()
+            val candidates = mutableListOf<RawCandidateOccurrence>()
+            val hasPermission = hasCalendarPermission()
 
         if (hasPermission) {
             registerCalendarObserver()
@@ -623,7 +641,7 @@ class CalendarSyncManager(private val context: Context) {
                                 }
                                 existingAlarm = updatedAlarm
                             }
-                        } else if (existingAlarm.meetingStartTime != c.start) {
+                        } else if (kotlin.math.abs((existingAlarm.meetingStartTime ?: 0L) - c.start) >= 60_000L) {
                             val updatedAlarm = existingAlarm.copy(
                                 title = c.title,
                                 hour = alarmHour,
@@ -703,11 +721,16 @@ class CalendarSyncManager(private val context: Context) {
         meetings.sortBy { it.startTimeMillis }
 
         // Check for new or rescheduled timed meetings to prompt (never prompt for all-day / untimed entries)
+        // Only prompt for upcoming meetings starting within the next 48 hours (max 3 per pass) to avoid flooding system notifications
         val settings = settingsRepo.settingsFlow.value
         if (settings.promptCalendarMeetings) {
+            val nowMs = System.currentTimeMillis()
+            val promptHorizonMs = nowMs + (48L * 60 * 60 * 1000L)
             val promptedEventIdsInPass = mutableSetOf<Long>()
+            var notificationsPostedInPass = 0
             for (meeting in meetings) {
-                if (meeting.startTimeMillis > System.currentTimeMillis() && !meeting.isAllDay) {
+                if (notificationsPostedInPass >= 3) break
+                if (meeting.startTimeMillis in (nowMs + 1)..promptHorizonMs && !meeting.isAllDay) {
                     if (!promptedEventIdsInPass.add(meeting.id)) continue
 
                     val alreadyPromptedForThisTime = settingsRepo.isMeetingPrompted(meeting.id, meeting.startTimeMillis)
@@ -717,6 +740,7 @@ class CalendarSyncManager(private val context: Context) {
                         Log.d("CalendarSyncManager", "Timed meeting detected! Posting 5m/10m prompt: ${meeting.title} at ${meeting.getFormattedStartTime()}")
                         AlarmNotificationManager.postMeetingPromptNotification(context, meeting)
                         settingsRepo.markMeetingPrompted(meeting.id, meeting.startTimeMillis)
+                        notificationsPostedInPass++
                     }
                 }
             }
@@ -724,6 +748,7 @@ class CalendarSyncManager(private val context: Context) {
 
         _meetingsFlow.value = meetings
         meetings
+        }
     }
 
     /**

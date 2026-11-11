@@ -248,6 +248,7 @@ class AlarmActionReceiver : BroadcastReceiver() {
     private fun stopAudioService(context: Context) {
         val stopIntent = Intent(context, AlarmAudioService::class.java)
         context.stopService(stopIntent)
+        androidx.core.app.NotificationManagerCompat.from(context).cancel(AlarmAudioService.NOTIFICATION_ID)
     }
 
     private suspend fun advanceOrDisableAlarm(db: AppDatabase, scheduler: AlarmScheduler, alarm: AlarmEntity) {

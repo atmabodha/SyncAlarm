@@ -160,8 +160,8 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ALARM)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                         .build()
                 )
                 val vol = volume.coerceIn(0.1f, 1.0f)

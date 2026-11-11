@@ -28,6 +28,7 @@ class AlarmAudioService : Service() {
     private var mediaPlayer: MediaPlayer? = null
     private var vibrator: Vibrator? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var screenWakeLock: PowerManager.WakeLock? = null
     private var autoSilenceTimer: CountDownTimer? = null
     private var currentAlarm: AlarmEntity? = null
     private var startJob: kotlinx.coroutines.Job? = null
@@ -45,10 +46,19 @@ class AlarmAudioService : Service() {
         startJob?.cancel()
         stopAudio()
 
-        // Acquire WakeLock to keep CPU active while ringing
+        // Acquire CPU and Screen WakeLocks so the screen turns on immediately when locked
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SyncAlarm:AudioServiceLock").apply {
             acquire(5 * 60 * 1000L) // 5 minutes max
+        }
+        @Suppress("DEPRECATION")
+        screenWakeLock = powerManager.newWakeLock(
+            PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                    PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                    PowerManager.ON_AFTER_RELEASE,
+            "SyncAlarm:ScreenWakeLock"
+        ).apply {
+            acquire(60 * 1000L)
         }
 
         startJob = CoroutineScope(Dispatchers.IO).launch {
@@ -64,18 +74,78 @@ class AlarmAudioService : Service() {
             // Ensure channels are up to date (and legacy noisy channel is deleted)
             AlarmNotificationManager.createNotificationChannels(applicationContext)
 
-            // Start foreground with high-priority silent alarm notification
+            // Start foreground with high-priority full-screen alarm notification
             val notification = AlarmNotificationManager.buildRingingNotification(applicationContext, alarm)
             startForeground(NOTIFICATION_ID, notification)
 
-            // Start audio & vibration on Main thread, stopping any prior player first
+            // Start audio, vibration, and launch full-screen lockscreen activity on Main thread
             launch(Dispatchers.Main) {
                 startAudioAndVibration(alarm)
                 startAutoSilenceTimer(alarm)
+                try {
+                    val activityIntent = Intent(applicationContext, AlarmRingingActivity::class.java).apply {
+                        addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or
+                                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+                        )
+                        putExtra(AlarmNotificationManager.EXTRA_ALARM_ID, alarm.id)
+                    }
+                    startActivity(activityIntent)
+                } catch (e: Exception) {
+                    Log.w("AlarmAudioService", "Full-screen intent handled via NotificationManager: ${e.message}")
+                }
             }
         }
 
         return START_NOT_STICKY
+    }
+
+    private var audioModeListener: AudioManager.OnModeChangedListener? = null
+
+    private fun isDeviceInCallOrVoip(): Boolean {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
+        val mode = audioManager.mode
+        return mode == AudioManager.MODE_IN_CALL ||
+                mode == AudioManager.MODE_IN_COMMUNICATION ||
+                mode == AudioManager.MODE_RINGTONE ||
+                mode == AudioManager.MODE_CALL_SCREENING
+    }
+
+    private fun registerCallModeListener() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && audioModeListener == null) {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+            val listener = AudioManager.OnModeChangedListener { mode ->
+                if (mode == AudioManager.MODE_IN_CALL ||
+                    mode == AudioManager.MODE_IN_COMMUNICATION ||
+                    mode == AudioManager.MODE_RINGTONE ||
+                    mode == AudioManager.MODE_CALL_SCREENING
+                ) {
+                    Log.d("AlarmAudioService", "Call or VoIP session detected (mode=$mode), silencing alarm audio to avoid dropping call")
+                    try {
+                        mediaPlayer?.pause()
+                        vibrator?.cancel()
+                    } catch (_: Exception) {}
+                }
+            }
+            try {
+                audioManager.addOnModeChangedListener(mainExecutor, listener)
+                audioModeListener = listener
+            } catch (e: Exception) {
+                Log.w("AlarmAudioService", "Could not register OnModeChangedListener: ${e.message}")
+            }
+        }
+    }
+
+    private fun unregisterCallModeListener() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val listener = audioModeListener ?: return
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            try {
+                audioManager?.removeOnModeChangedListener(listener)
+            } catch (_: Exception) {}
+            audioModeListener = null
+        }
     }
 
     private fun startAudioAndVibration(alarm: AlarmEntity) {
@@ -88,6 +158,14 @@ class AlarmAudioService : Service() {
             vibrator?.cancel()
         } catch (_: Exception) {}
         vibrator = null
+
+        registerCallModeListener()
+
+        // If the user is currently in a WhatsApp/VoIP or cellular call, do not hijack audio with USAGE_ALARM
+        if (isDeviceInCallOrVoip()) {
+            Log.d("AlarmAudioService", "Device is in an active call/VoIP session; skipping loud USAGE_ALARM playback")
+            return
+        }
 
         try {
             mediaPlayer = MediaPlayer().apply {
@@ -149,7 +227,17 @@ class AlarmAudioService : Service() {
         val timeoutMillis = (settings.autoSilenceSeconds * 1000L).coerceAtLeast(15000L)
 
         autoSilenceTimer = object : CountDownTimer(timeoutMillis, 1000L) {
-            override fun onTick(millisUntilFinished: Long) {}
+            override fun onTick(millisUntilFinished: Long) {
+                // If an incoming WhatsApp / VoIP or phone call arrives while the alarm is ringing, yield audio immediately
+                if (isDeviceInCallOrVoip()) {
+                    try {
+                        if (mediaPlayer?.isPlaying == true) {
+                            mediaPlayer?.pause()
+                        }
+                        vibrator?.cancel()
+                    } catch (_: Exception) {}
+                }
+            }
 
             override fun onFinish() {
                 Log.d("AlarmAudioService", "Alarm auto-silenced with no user action.")
@@ -181,6 +269,9 @@ class AlarmAudioService : Service() {
             }
 
             stopAudio()
+            try {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } catch (_: Exception) {}
             stopSelf()
         }
     }
@@ -209,6 +300,7 @@ class AlarmAudioService : Service() {
 
     private fun stopAudio() {
         try {
+            unregisterCallModeListener()
             autoSilenceTimer?.cancel()
             autoSilenceTimer = null
             mediaPlayer?.stop()
@@ -220,14 +312,23 @@ class AlarmAudioService : Service() {
                 if (it.isHeld) it.release()
             }
             wakeLock = null
+            screenWakeLock?.let {
+                if (it.isHeld) it.release()
+            }
+            screenWakeLock = null
+            androidx.core.app.NotificationManagerCompat.from(applicationContext).cancel(NOTIFICATION_ID)
         } catch (e: Exception) {
             Log.e("AlarmAudioService", "Error stopping audio", e)
         }
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        startJob?.cancel()
         stopAudio()
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } catch (_: Exception) {}
+        super.onDestroy()
     }
 
     companion object {
