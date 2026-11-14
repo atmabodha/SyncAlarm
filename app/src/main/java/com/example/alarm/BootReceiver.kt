@@ -15,6 +15,22 @@ class BootReceiver : BroadcastReceiver() {
         val action = intent.action
         Log.d("BootReceiver", "Received broadcast: $action")
 
+        if (action == Intent.ACTION_PROVIDER_CHANGED) {
+            val pendingResult = goAsync()
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    val syncManager = (context.applicationContext as? com.example.SyncAlarmApplication)?.calendarSyncManager
+                        ?: com.example.calendar.CalendarSyncManager(context.applicationContext)
+                    syncManager.syncCalendarEvents(forcePrompt = false)
+                } catch (e: Exception) {
+                    Log.e("BootReceiver", "Error syncing calendar on provider change", e)
+                } finally {
+                    pendingResult.finish()
+                }
+            }
+            return
+        }
+
         if (action == Intent.ACTION_BOOT_COMPLETED ||
             action == Intent.ACTION_MY_PACKAGE_REPLACED ||
             action == Intent.ACTION_TIME_CHANGED ||

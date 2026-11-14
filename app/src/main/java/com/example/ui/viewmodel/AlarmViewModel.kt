@@ -39,6 +39,8 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
 
     val meetings: StateFlow<List<CalendarMeeting>> = calendarSyncManager.meetingsFlow
 
+    val deletedMeetingAlarms: StateFlow<List<AlarmEntity>> = calendarSyncManager.deletedMeetingAlarmsFlow
+
     private val _soundOptions = MutableStateFlow<List<AlarmSoundOption>>(emptyList())
     val soundOptions: StateFlow<List<AlarmSoundOption>> = _soundOptions.asStateFlow()
 
@@ -104,7 +106,38 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteAlarm(alarm: AlarmEntity) {
         viewModelScope.launch {
+            com.example.alarm.AlarmNotificationManager.cancelMeetingDeletedPromptNotification(getApplication(), alarm.id)
+            settingsRepo.markDeletionPrompted(alarm.id)
             alarmRepo.deleteAlarm(alarm)
+            calendarSyncManager.syncCalendarEvents()
+        }
+    }
+
+    fun confirmDeleteMeetingAlarm(alarm: AlarmEntity) {
+        viewModelScope.launch {
+            com.example.alarm.AlarmNotificationManager.cancelMeetingDeletedPromptNotification(getApplication(), alarm.id)
+            settingsRepo.markDeletionPrompted(alarm.id)
+            alarmRepo.deleteAlarm(alarm)
+            calendarSyncManager.syncCalendarEvents()
+        }
+    }
+
+    fun keepDeletedMeetingAlarm(alarm: AlarmEntity) {
+        viewModelScope.launch {
+            com.example.alarm.AlarmNotificationManager.cancelMeetingDeletedPromptNotification(getApplication(), alarm.id)
+            settingsRepo.markDeletionPrompted(alarm.id)
+            val preservedScheduleType = if (alarm.scheduleType == AlarmEntity.SCHEDULE_TYPE_RECURRING_DAYS) {
+                AlarmEntity.SCHEDULE_TYPE_RECURRING_DAYS
+            } else {
+                AlarmEntity.SCHEDULE_TYPE_ONE_TIME
+            }
+            alarmRepo.saveAlarm(
+                alarm.copy(
+                    isManual = true,
+                    calendarEventId = null,
+                    scheduleType = preservedScheduleType
+                )
+            )
             calendarSyncManager.syncCalendarEvents()
         }
     }

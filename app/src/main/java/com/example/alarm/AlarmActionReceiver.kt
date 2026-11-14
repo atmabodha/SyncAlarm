@@ -211,9 +211,12 @@ class AlarmActionReceiver : BroadcastReceiver() {
                     CoroutineScope(Dispatchers.IO).launch {
                         val alarm = db.alarmDao().getAlarmById(alarmId)
                         db.alarmDao().deleteAlarmById(alarmId)
+                        val syncManager = (context.applicationContext as? com.example.SyncAlarmApplication)?.calendarSyncManager
+                            ?: com.example.calendar.CalendarSyncManager(context.applicationContext)
+                        syncManager.syncCalendarEvents(forcePrompt = false)
                         launch(Dispatchers.Main) {
                             val titleStr = alarm?.title ?: "deleted meeting"
-                            Toast.makeText(context, "Removed alarm for $titleStr", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Deleted alarm for $titleStr", Toast.LENGTH_SHORT).show()
                         }
                     }
                 }
@@ -228,14 +231,22 @@ class AlarmActionReceiver : BroadcastReceiver() {
                         // Detach from deleted calendar event so it remains as a standalone alarm
                         val alarm = db.alarmDao().getAlarmById(alarmId)
                         if (alarm != null) {
+                            val preservedScheduleType = if (alarm.scheduleType == AlarmEntity.SCHEDULE_TYPE_RECURRING_DAYS) {
+                                AlarmEntity.SCHEDULE_TYPE_RECURRING_DAYS
+                            } else {
+                                AlarmEntity.SCHEDULE_TYPE_ONE_TIME
+                            }
                             db.alarmDao().updateAlarm(
                                 alarm.copy(
                                     isManual = true,
                                     calendarEventId = null,
-                                    scheduleType = AlarmEntity.SCHEDULE_TYPE_ONE_TIME
+                                    scheduleType = preservedScheduleType
                                 )
                             )
                         }
+                        val syncManager = (context.applicationContext as? com.example.SyncAlarmApplication)?.calendarSyncManager
+                            ?: com.example.calendar.CalendarSyncManager(context.applicationContext)
+                        syncManager.syncCalendarEvents(forcePrompt = false)
                         launch(Dispatchers.Main) {
                             Toast.makeText(context, "Alarm kept active", Toast.LENGTH_SHORT).show()
                         }

@@ -42,6 +42,9 @@ class CalendarSyncManager(private val context: Context) {
     private val _meetingsFlow = MutableStateFlow<List<CalendarMeeting>>(emptyList())
     val meetingsFlow: StateFlow<List<CalendarMeeting>> = _meetingsFlow.asStateFlow()
 
+    private val _deletedMeetingAlarmsFlow = MutableStateFlow<List<com.example.data.model.AlarmEntity>>(emptyList())
+    val deletedMeetingAlarmsFlow: StateFlow<List<com.example.data.model.AlarmEntity>> = _deletedMeetingAlarmsFlow.asStateFlow()
+
     private var contentObserver: ContentObserver? = null
 
     init {
@@ -63,11 +66,10 @@ class CalendarSyncManager(private val context: Context) {
             val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
                 override fun onChange(selfChange: Boolean, uri: Uri?) {
                     super.onChange(selfChange, uri)
-                    // Debounce calendar provider change notifications and NEVER call requestSystemCalendarSync()
-                    // from inside onChange, which would cause an infinite sync/notification loop.
+                    // Fast 800ms debounce so deleting a meeting in Google Calendar raises the prompt notification almost immediately
                     observerDebounceJob?.cancel()
                     observerDebounceJob = syncScope.launch {
-                        delay(3000L)
+                        delay(800L)
                         syncCalendarEvents(forcePrompt = false)
                     }
                 }
@@ -279,7 +281,8 @@ class CalendarSyncManager(private val context: Context) {
     }
 
     /**
-     * Checks if a real Google Calendar event ID was deleted or removed from the provider.
+     * Checks if a real Google Calendar event row was completely deleted, canceled, or declined in the provider.
+     * Note: Does NOT treat a single canceled occurrence (ORIGINAL_ID exception row) as a full series deletion.
      */
     private fun isCalendarEventDeletedOrMissing(eventId: Long): Boolean {
         if (!hasCalendarPermission()) return false
@@ -287,7 +290,8 @@ class CalendarSyncManager(private val context: Context) {
             val projection = arrayOf(
                 CalendarContract.Events._ID,
                 CalendarContract.Events.DELETED,
-                CalendarContract.Events.STATUS
+                CalendarContract.Events.STATUS,
+                CalendarContract.Events.SELF_ATTENDEE_STATUS
             )
             val selection = "${CalendarContract.Events._ID} = ?"
             val selectionArgs = arrayOf(eventId.toString())
@@ -310,6 +314,10 @@ class CalendarSyncManager(private val context: Context) {
                 if (statusCol != -1 && cursor.getInt(statusCol) == CalendarContract.Events.STATUS_CANCELED) {
                     return true // Event canceled
                 }
+                val attendeeCol = cursor.getColumnIndex(CalendarContract.Events.SELF_ATTENDEE_STATUS)
+                if (attendeeCol != -1 && cursor.getInt(attendeeCol) == CalendarContract.Attendees.ATTENDEE_STATUS_DECLINED) {
+                    return true // Event declined / removed by user in Google Calendar
+                }
                 return false
             }
             return true
@@ -331,6 +339,45 @@ class CalendarSyncManager(private val context: Context) {
         val hour: Int,
         val minute: Int
     )
+
+    private fun resolvedRepeatDaysFromCounts(
+        isMultiOccurrenceById: Boolean,
+        isMultiOccurrenceByTitleTime: Boolean,
+        idMask: Int?,
+        titleMask: Int?,
+        rruleBits: Int
+    ): Int {
+        return when {
+            isMultiOccurrenceById && isMultiOccurrenceByTitleTime ->
+                (idMask ?: 0) or (titleMask ?: 0)
+            isMultiOccurrenceById ->
+                idMask ?: rruleBits
+            isMultiOccurrenceByTitleTime ->
+                titleMask ?: 0
+            else -> 0
+        }
+    }
+
+    /**
+     * Checks if an existing alarm's meeting start time-of-day (or alarm time + offsetMinutes) matches
+     * the candidate meeting's hour and minute.
+     */
+    private fun isSameMeetingTimeOfDay(
+        alarm: com.example.data.model.AlarmEntity,
+        meetingHour: Int,
+        meetingMinute: Int
+    ): Boolean {
+        val mStart = alarm.meetingStartTime
+        if (mStart != null && mStart > 0L) {
+            val cal = Calendar.getInstance().apply { timeInMillis = mStart }
+            if (cal.get(Calendar.HOUR_OF_DAY) == meetingHour && cal.get(Calendar.MINUTE) == meetingMinute) {
+                return true
+            }
+        }
+        val expectedAlarmTotalMins = ((meetingHour * 60 + meetingMinute - alarm.offsetMinutes) % 1440 + 1440) % 1440
+        val actualAlarmTotalMins = alarm.hour * 60 + alarm.minute
+        return expectedAlarmTotalMins == actualAlarmTotalMins
+    }
 
     suspend fun syncCalendarEvents(forcePrompt: Boolean = false): List<CalendarMeeting> = withContext(Dispatchers.IO) {
         syncMutex.withLock {
@@ -368,6 +415,7 @@ class CalendarSyncManager(private val context: Context) {
                     allDayFlag: Int,
                     deletedFlag: Int,
                     statusFlag: Int,
+                    selfAttendeeStatus: Int,
                     eventTz: String?,
                     durationStr: String?,
                     rruleStr: String?,
@@ -375,6 +423,7 @@ class CalendarSyncManager(private val context: Context) {
                 ) {
                     if (deletedFlag != 0) return
                     if (statusFlag == CalendarContract.Events.STATUS_CANCELED) return
+                    if (selfAttendeeStatus == CalendarContract.Attendees.ATTENDEE_STATUS_DECLINED) return
                     val effectiveEnd = if (end > start) end else start + 1800_000L
                     if (effectiveEnd < now - (15L * 60 * 1000L) && start < now - (15L * 60 * 1000L)) return
                     if (start > ninetyDaysLater) return
@@ -426,7 +475,8 @@ class CalendarSyncManager(private val context: Context) {
                     CalendarContract.Events.DURATION,
                     CalendarContract.Events.RRULE,
                     CalendarContract.Events.DELETED,
-                    CalendarContract.Events.STATUS
+                    CalendarContract.Events.STATUS,
+                    CalendarContract.Instances.SELF_ATTENDEE_STATUS
                 )
 
                 val instanceSortOrder = "${CalendarContract.Instances.BEGIN} ASC"
@@ -450,6 +500,7 @@ class CalendarSyncManager(private val context: Context) {
                     val rruleCol = cursor.getColumnIndex(CalendarContract.Events.RRULE)
                     val delCol = cursor.getColumnIndex(CalendarContract.Events.DELETED)
                     val statusCol = cursor.getColumnIndex(CalendarContract.Events.STATUS)
+                    val attendeeCol = cursor.getColumnIndex(CalendarContract.Instances.SELF_ATTENDEE_STATUS)
 
                     while (cursor.moveToNext()) {
                         val id = cursor.getLong(idCol)
@@ -464,6 +515,7 @@ class CalendarSyncManager(private val context: Context) {
                         val rruleStr = if (rruleCol != -1) cursor.getString(rruleCol) else null
                         val deletedFlag = if (delCol != -1) cursor.getInt(delCol) else 0
                         val statusFlag = if (statusCol != -1) cursor.getInt(statusCol) else 0
+                        val selfAttendeeStatus = if (attendeeCol != -1) cursor.getInt(attendeeCol) else 0
 
                         collectCandidate(
                             id = id,
@@ -475,6 +527,7 @@ class CalendarSyncManager(private val context: Context) {
                             allDayFlag = allDayFlag,
                             deletedFlag = deletedFlag,
                             statusFlag = statusFlag,
+                            selfAttendeeStatus = selfAttendeeStatus,
                             eventTz = eventTz,
                             durationStr = durationStr,
                             rruleStr = rruleStr,
@@ -496,7 +549,8 @@ class CalendarSyncManager(private val context: Context) {
                     CalendarContract.Events.DURATION,
                     CalendarContract.Events.RRULE,
                     CalendarContract.Events.DELETED,
-                    CalendarContract.Events.STATUS
+                    CalendarContract.Events.STATUS,
+                    CalendarContract.Events.SELF_ATTENDEE_STATUS
                 )
                 val eventsSelection = "(${CalendarContract.Events.DTSTART} >= ?) AND (${CalendarContract.Events.DTSTART} <= ?)"
                 val eventsArgs = arrayOf(queryStart.toString(), ninetyDaysLater.toString())
@@ -521,6 +575,7 @@ class CalendarSyncManager(private val context: Context) {
                     val rruleCol = cursor.getColumnIndex(CalendarContract.Events.RRULE)
                     val delCol = cursor.getColumnIndex(CalendarContract.Events.DELETED)
                     val statusCol = cursor.getColumnIndex(CalendarContract.Events.STATUS)
+                    val attendeeCol = cursor.getColumnIndex(CalendarContract.Events.SELF_ATTENDEE_STATUS)
 
                     while (cursor.moveToNext()) {
                         val id = cursor.getLong(idCol)
@@ -535,6 +590,7 @@ class CalendarSyncManager(private val context: Context) {
                         val rruleStr = if (rruleCol != -1) cursor.getString(rruleCol) else null
                         val deletedFlag = if (delCol != -1) cursor.getInt(delCol) else 0
                         val statusFlag = if (statusCol != -1) cursor.getInt(statusCol) else 0
+                        val selfAttendeeStatus = if (attendeeCol != -1) cursor.getInt(attendeeCol) else 0
 
                         collectCandidate(
                             id = id,
@@ -546,6 +602,7 @@ class CalendarSyncManager(private val context: Context) {
                             allDayFlag = allDayFlag,
                             deletedFlag = deletedFlag,
                             statusFlag = statusFlag,
+                            selfAttendeeStatus = selfAttendeeStatus,
                             eventTz = eventTz,
                             durationStr = durationStr,
                             rruleStr = rruleStr,
@@ -555,6 +612,7 @@ class CalendarSyncManager(private val context: Context) {
                 }
 
                 // 3. Consolidate recurring series (by event ID and by matching title+time across multiple days of the week)
+                val activeCandidateEventIds = candidates.map { it.id }.toSet()
                 val eventIdDaysMask = mutableMapOf<Long, Int>()
                 val eventIdCount = mutableMapOf<Long, Int>()
                 val titleTimeDaysMask = mutableMapOf<String, Int>()
@@ -572,6 +630,8 @@ class CalendarSyncManager(private val context: Context) {
 
                 val consolidatedEventIds = mutableSetOf<Long>()
                 val consolidatedRecurringTitleTimeKeys = mutableSetOf<String>()
+                val matchedAlarmIds = mutableSetOf<Long>()
+                val allCalendarLinkedAlarms = db.alarmDao().getCalendarLinkedAlarms()
 
                 // Sort candidates so we pick the nearest upcoming future occurrence (or ongoing occurrence) first
                 val sortedCandidates = candidates.sortedWith(
@@ -583,25 +643,45 @@ class CalendarSyncManager(private val context: Context) {
                     val isMultiOccurrenceById = (eventIdCount[c.id] ?: 0) > 1 || c.rruleBits > 0
                     val isMultiOccurrenceByTitleTime = (titleTimeCount[titleTimeKey] ?: 0) > 1
 
-                    val resolvedRepeatDays = when {
-                        isMultiOccurrenceById && isMultiOccurrenceByTitleTime ->
-                            (eventIdDaysMask[c.id] ?: 0) or (titleTimeDaysMask[titleTimeKey] ?: 0)
-                        isMultiOccurrenceById ->
-                            eventIdDaysMask[c.id] ?: c.rruleBits
-                        isMultiOccurrenceByTitleTime ->
-                            titleTimeDaysMask[titleTimeKey] ?: 0
-                        else -> 0
+                    // Also check if an existing recurring alarm matches this event's title & time-of-day
+                    // (e.g., when a recurring series was split or had one occurrence deleted in Google Calendar)
+                    val matchingExistingAlarm = db.alarmDao().getAlarmByCalendarEventId(c.id)
+                        ?: allCalendarLinkedAlarms.firstOrNull { alarm ->
+                            alarm.id !in matchedAlarmIds &&
+                                (resolvedRepeatDaysFromCounts(isMultiOccurrenceById, isMultiOccurrenceByTitleTime, eventIdDaysMask[c.id], titleTimeDaysMask[titleTimeKey], c.rruleBits) > 0 ||
+                                    alarm.scheduleType == com.example.data.model.AlarmEntity.SCHEDULE_TYPE_RECURRING_DAYS) &&
+                                alarm.title.trim().equals(c.title.trim(), ignoreCase = true) &&
+                                isSameMeetingTimeOfDay(alarm, c.hour, c.minute)
+                        }
+
+                    val baseRepeatDays = resolvedRepeatDaysFromCounts(
+                        isMultiOccurrenceById = isMultiOccurrenceById,
+                        isMultiOccurrenceByTitleTime = isMultiOccurrenceByTitleTime,
+                        idMask = eventIdDaysMask[c.id],
+                        titleMask = titleTimeDaysMask[titleTimeKey],
+                        rruleBits = c.rruleBits
+                    )
+                    // If this series already had a recurring alarm and still has upcoming occurrences, preserve its recurring nature
+                    val resolvedRepeatDays = if (baseRepeatDays > 0) {
+                        baseRepeatDays
+                    } else if (matchingExistingAlarm?.scheduleType == com.example.data.model.AlarmEntity.SCHEDULE_TYPE_RECURRING_DAYS &&
+                        matchingExistingAlarm.repeatDays > 0
+                    ) {
+                        c.dayOfWeekBit
+                    } else {
+                        0
                     }
 
                     if (!consolidatedEventIds.add(c.id)) continue
                     if (resolvedRepeatDays > 0 && !consolidatedRecurringTitleTimeKeys.add(titleTimeKey)) continue
 
-                    var existingAlarm = db.alarmDao().getAlarmByCalendarEventId(c.id)
-                        ?: db.alarmDao().getCalendarLinkedAlarms().firstOrNull {
-                            it.title.trim().equals(c.title.trim(), ignoreCase = true)
-                        }
+                    var existingAlarm = matchingExistingAlarm
 
                     if (existingAlarm != null) {
+                        matchedAlarmIds.add(existingAlarm.id)
+                        // Ensure any stale deleted-meeting notification for this alarm is cleared since the series is still active
+                        AlarmNotificationManager.cancelMeetingDeletedPromptNotification(context, existingAlarm.id)
+
                         val newTriggerTime = c.start - (existingAlarm.offsetMinutes * 60 * 1000L)
                         val cal = Calendar.getInstance().apply { timeInMillis = newTriggerTime }
                         val alarmHour = cal.get(Calendar.HOUR_OF_DAY)
@@ -618,14 +698,20 @@ class CalendarSyncManager(private val context: Context) {
                                 minute = alarmMinute,
                                 scheduleType = com.example.data.model.AlarmEntity.SCHEDULE_TYPE_RECURRING_DAYS,
                                 repeatDays = adjustedRepeatDays,
-                                specificDateMillis = null
+                                specificDateMillis = null,
+                                meetingStartTime = c.start,
+                                offsetMinutes = existingAlarm.offsetMinutes
                             )
-                            if (existingAlarm.scheduleType != com.example.data.model.AlarmEntity.SCHEDULE_TYPE_RECURRING_DAYS ||
+                            if (existingAlarm.calendarEventId != c.id ||
+                                existingAlarm.scheduleType != com.example.data.model.AlarmEntity.SCHEDULE_TYPE_RECURRING_DAYS ||
                                 existingAlarm.repeatDays != adjustedRepeatDays ||
                                 existingAlarm.hour != alarmHour ||
-                                existingAlarm.minute != alarmMinute
+                                existingAlarm.minute != alarmMinute ||
+                                kotlin.math.abs(existingAlarm.triggerTimeMillis - nextRecurringTrigger) >= 60_000L ||
+                                kotlin.math.abs((existingAlarm.meetingStartTime ?: 0L) - c.start) >= 60_000L
                             ) {
                                 val updatedAlarm = existingAlarm.copy(
+                                    calendarEventId = c.id,
                                     title = c.title,
                                     hour = alarmHour,
                                     minute = alarmMinute,
@@ -641,8 +727,11 @@ class CalendarSyncManager(private val context: Context) {
                                 }
                                 existingAlarm = updatedAlarm
                             }
-                        } else if (kotlin.math.abs((existingAlarm.meetingStartTime ?: 0L) - c.start) >= 60_000L) {
+                        } else if (existingAlarm.calendarEventId != c.id ||
+                            kotlin.math.abs((existingAlarm.meetingStartTime ?: 0L) - c.start) >= 60_000L
+                        ) {
                             val updatedAlarm = existingAlarm.copy(
+                                calendarEventId = c.id,
                                 title = c.title,
                                 hour = alarmHour,
                                 minute = alarmMinute,
@@ -674,22 +763,39 @@ class CalendarSyncManager(private val context: Context) {
                     )
                 }
 
-                // Detect if any previously synced Google Calendar meeting with an active alarm was deleted
+                // Detect if any previously synced Google Calendar meeting with an active alarm was completely deleted.
+                // Any alarm in matchedAlarmIds still has active upcoming occurrences in Google Calendar (e.g. a recurring series
+                // where only one single occurrence was deleted) and MUST NOT be deleted or flagged as missing.
                 val calendarAlarms = db.alarmDao().getCalendarLinkedAlarms()
+                val detectedDeletedAlarms = mutableListOf<com.example.data.model.AlarmEntity>()
                 for (alarm in calendarAlarms) {
+                    if (alarm.id in matchedAlarmIds) continue
                     val eventId = alarm.calendarEventId ?: continue
                     val isSimulated = eventId >= 1_600_000_000_000L
-                    if (!isSimulated && alarm.isEnabled && alarm.triggerTimeMillis > System.currentTimeMillis()) {
-                        if (isCalendarEventDeletedOrMissing(eventId)) {
+                    if (!isSimulated && alarm.isEnabled) {
+                        val eventRowDeleted = isCalendarEventDeletedOrMissing(eventId)
+                        val expectedTime = alarm.meetingStartTime ?: alarm.triggerTimeMillis
+                        val noActiveInstanceInCalendar = if (alarm.scheduleType == com.example.data.model.AlarmEntity.SCHEDULE_TYPE_RECURRING_DAYS) {
+                            eventId !in activeCandidateEventIds &&
+                                candidates.none {
+                                    it.title.trim().equals(alarm.title.trim(), ignoreCase = true) &&
+                                        isSameMeetingTimeOfDay(alarm, it.hour, it.minute)
+                                }
+                        } else {
+                            expectedTime <= ninetyDaysLater && eventId !in activeCandidateEventIds
+                        }
+
+                        if (eventRowDeleted || noActiveInstanceInCalendar) {
                             if (!settingsRepo.isDeletionPrompted(alarm.id)) {
-                                Log.d("CalendarSyncManager", "Detected deleted calendar meeting for alarm ${alarm.title}. Prompting user.")
+                                Log.d("CalendarSyncManager", "Detected deleted calendar meeting for alarm '${alarm.title}' (eventId=$eventId). Prompting user.")
                                 AlarmNotificationManager.cancelMeetingPromptNotification(context, eventId)
                                 AlarmNotificationManager.postMeetingDeletedPromptNotification(context, alarm)
-                                settingsRepo.markDeletionPrompted(alarm.id)
+                                detectedDeletedAlarms.add(alarm)
                             }
                         }
                     }
                 }
+                _deletedMeetingAlarmsFlow.value = detectedDeletedAlarms
             } catch (e: Exception) {
                 Log.e("CalendarSyncManager", "Error querying calendar content provider", e)
             }

@@ -145,7 +145,14 @@ class AlarmScheduler(private val context: Context) {
             // Recurring days alarm (e.g. Mon, Thu)
             if (scheduleType == AlarmEntity.SCHEDULE_TYPE_RECURRING_DAYS && repeatDays > 0) {
                 val now = Calendar.getInstance()
-                for (dayOffset in 0..7) {
+                // If linked to a Google Calendar recurring series, meetingStartTime is the next non-deleted instance.
+                // Do not schedule an alarm earlier than (meetingStartTime - offsetMinutes) when a single occurrence was deleted.
+                val minValidTriggerMillis = if (meetingStartTime != null && meetingStartTime > now.timeInMillis) {
+                    meetingStartTime - (offsetMinutes * 60 * 1000L)
+                } else {
+                    0L
+                }
+                for (dayOffset in 0..30) {
                     val candidate = Calendar.getInstance().apply {
                         add(Calendar.DAY_OF_YEAR, dayOffset)
                         set(Calendar.HOUR_OF_DAY, hour)
@@ -153,7 +160,9 @@ class AlarmScheduler(private val context: Context) {
                         set(Calendar.SECOND, 0)
                         set(Calendar.MILLISECOND, 0)
                     }
-                    if (candidate.timeInMillis > now.timeInMillis) {
+                    if (candidate.timeInMillis > now.timeInMillis &&
+                        (minValidTriggerMillis <= now.timeInMillis || candidate.timeInMillis >= minValidTriggerMillis - 60_000L)
+                    ) {
                         val dayOfWeek = candidate.get(Calendar.DAY_OF_WEEK)
                         val bit = when (dayOfWeek) {
                             Calendar.MONDAY -> AlarmEntity.DAY_MON
@@ -169,6 +178,9 @@ class AlarmScheduler(private val context: Context) {
                             return candidate.timeInMillis
                         }
                     }
+                }
+                if (minValidTriggerMillis > now.timeInMillis) {
+                    return minValidTriggerMillis
                 }
             }
 

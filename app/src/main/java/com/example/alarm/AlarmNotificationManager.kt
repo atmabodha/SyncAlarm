@@ -21,6 +21,7 @@ object AlarmNotificationManager {
     const val CHANNEL_RINGING_ID = "sync_alarm_ringing_silent_v2"
     const val CHANNEL_UPCOMING_ID = "sync_alarm_upcoming_channel"
     const val CHANNEL_PROMPTS_ID = "sync_alarm_calendar_prompts_channel"
+    const val CHANNEL_DELETED_MEETING_ID = "sync_alarm_deleted_meeting_alert_v3"
 
     const val EXTRA_ALARM_ID = "extra_alarm_id"
     const val EXTRA_EVENT_ID = "extra_event_id"
@@ -75,14 +76,26 @@ object AlarmNotificationManager {
                 "Calendar Meeting Alarms",
                 NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "Interactive notifications to schedule or remove alarms for detected meetings"
+                description = "Interactive notifications to schedule alarms for detected meetings"
                 enableVibration(false)
                 setSound(null, null)
                 setShowBadge(true)
             }
 
+            // 4. Deleted Calendar Meeting Alert Channel (High importance so user is immediately asked to delete or keep alarm)
+            val deletedMeetingChannel = NotificationChannel(
+                CHANNEL_DELETED_MEETING_ID,
+                "Deleted Meeting Alarm Prompts",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Alerts you when a Google Calendar meeting is deleted and asks whether to delete its alarm"
+                enableVibration(true)
+                setShowBadge(true)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            }
+
             notificationManager.createNotificationChannels(
-                listOf(ringingChannel, upcomingChannel, promptsChannel)
+                listOf(ringingChannel, upcomingChannel, promptsChannel, deletedMeetingChannel)
             )
         }
     }
@@ -177,10 +190,11 @@ object AlarmNotificationManager {
     }
 
     /**
-     * Shows notification asking the user if an alarm should also be removed when its
+     * Shows a high-priority notification asking the user if an alarm should also be deleted when its
      * corresponding meeting has been deleted from Google Calendar.
      */
     fun postMeetingDeletedPromptNotification(context: Context, alarm: AlarmEntity) {
+        createNotificationChannels(context)
         val notifManager = NotificationManagerCompat.from(context)
         val notifId = (30000 + (alarm.id % 10000)).toInt()
 
@@ -216,20 +230,22 @@ object AlarmNotificationManager {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = NotificationCompat.Builder(context, CHANNEL_PROMPTS_ID)
+        val notification = NotificationCompat.Builder(context, CHANNEL_DELETED_MEETING_ID)
             .setSmallIcon(android.R.drawable.ic_menu_delete)
             .setContentTitle("Meeting Deleted: ${alarm.title}")
-            .setContentText("Remove its ${alarm.getFormattedTime()} alarm as well?")
+            .setContentText("Delete the ${alarm.getFormattedTime()} alarm for this meeting?")
             .setStyle(
                 NotificationCompat.BigTextStyle().bigText(
-                    "\"${alarm.title}\" was deleted from Google Calendar.\nWould you like to remove the scheduled ${alarm.getFormattedTime()} alarm?"
+                    "\"${alarm.title}\" was deleted from your Google Calendar.\nShould its scheduled ${alarm.getFormattedTime()} alarm be deleted too?"
                 )
             )
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .setSilent(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setOnlyAlertOnce(true)
             .setContentIntent(pContentIntent)
             .setAutoCancel(true)
-            .addAction(android.R.drawable.ic_menu_delete, "Remove Alarm", pRemoveIntent)
+            .addAction(android.R.drawable.ic_menu_delete, "Delete Alarm", pRemoveIntent)
             .addAction(android.R.drawable.ic_lock_idle_alarm, "Keep Alarm", pKeepIntent)
             .build()
 

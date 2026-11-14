@@ -81,6 +81,7 @@ fun MainAppContent(viewModel: AlarmViewModel) {
     val alarms by viewModel.alarms.collectAsStateWithLifecycle()
     val nextUpcomingAlarm by viewModel.nextUpcomingAlarm.collectAsStateWithLifecycle()
     val meetings by viewModel.meetings.collectAsStateWithLifecycle()
+    val deletedMeetingAlarms by viewModel.deletedMeetingAlarms.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val soundOptions by viewModel.soundOptions.collectAsStateWithLifecycle()
     val isSyncing by viewModel.isCalendarSyncing.collectAsStateWithLifecycle()
@@ -248,11 +249,11 @@ fun MainAppContent(viewModel: AlarmViewModel) {
                     meetings = meetings,
                     isSyncing = isSyncing,
                     onSyncCalendar = { viewModel.syncCalendar() },
-                    onScheduleMeetingAlarm = { meeting, offset ->
-                        viewModel.scheduleMeetingAlarm(meeting, offset)
-                    },
                     onSimulateMeeting = { title, delay ->
                         viewModel.injectSampleMeeting(title, delay)
+                    },
+                    onScheduleMeetingAlarm = { meeting, offset ->
+                        viewModel.scheduleMeetingAlarm(meeting, offset)
                     },
                     onDeleteMeeting = { meeting ->
                         viewModel.deleteMeeting(meeting)
@@ -273,6 +274,53 @@ fun MainAppContent(viewModel: AlarmViewModel) {
                     },
                     onStopPreview = {
                         viewModel.stopTonePreview()
+                    }
+                )
+            }
+
+            // Automatic prompt when a Google Calendar meeting with an active alarm has been deleted
+            val pendingDeletedAlarm = deletedMeetingAlarms.firstOrNull()
+            if (pendingDeletedAlarm != null) {
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = {
+                        viewModel.keepDeletedMeetingAlarm(pendingDeletedAlarm)
+                    },
+                    containerColor = SurfaceCard,
+                    titleContentColor = TextPrimary,
+                    textContentColor = TextSecondary,
+                    title = {
+                        Text(
+                            text = "Meeting Deleted in Google Calendar",
+                            fontWeight = FontWeight.Bold
+                        )
+                    },
+                    text = {
+                        Text(
+                            text = "\"${pendingDeletedAlarm.title}\" was deleted from your Google Calendar.\n\nShould the ${pendingDeletedAlarm.getFormattedTime()} alarm set for this meeting be deleted as well?"
+                        )
+                    },
+                    confirmButton = {
+                        androidx.compose.material3.Button(
+                            onClick = {
+                                viewModel.confirmDeleteMeetingAlarm(pendingDeletedAlarm)
+                            },
+                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                containerColor = com.example.ui.theme.AlertCoral
+                            ),
+                            modifier = Modifier.testTag("confirm_delete_meeting_alarm_btn")
+                        ) {
+                            Text("Delete Alarm", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        androidx.compose.material3.OutlinedButton(
+                            onClick = {
+                                viewModel.keepDeletedMeetingAlarm(pendingDeletedAlarm)
+                            },
+                            modifier = Modifier.testTag("keep_deleted_meeting_alarm_btn")
+                        ) {
+                            Text("Keep Alarm", color = TextPrimary)
+                        }
                     }
                 )
             }

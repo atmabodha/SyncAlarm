@@ -33,7 +33,7 @@ interface AlarmDao {
     @Query("SELECT * FROM alarms WHERE isEnabled = 1")
     suspend fun getEnabledAlarms(): List<AlarmEntity>
 
-    @Query("SELECT * FROM alarms WHERE isManual = 0 AND calendarEventId IS NOT NULL")
+    @Query("SELECT * FROM alarms WHERE calendarEventId IS NOT NULL")
     suspend fun getCalendarLinkedAlarms(): List<AlarmEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

@@ -87,6 +87,12 @@
                 <action android:name="android.intent.action.TIME_SET" />
                 <action android:name="android.intent.action.TIMEZONE_CHANGED" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.PROVIDER_CHANGED" />
+                <data
+                    android:scheme="content"
+                    android:host="com.android.calendar" />
+            </intent-filter>
         </receiver>
 
         <!-- Foreground Service for Playing Alarm Audio & Handling Auto-Silence / Re-Alarm Loop -->
