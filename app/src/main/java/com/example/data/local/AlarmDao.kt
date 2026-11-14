@@ -15,6 +15,9 @@ interface AlarmDao {
     @Query("SELECT * FROM alarms ORDER BY isEnabled DESC, triggerTimeMillis ASC")
     fun getAllAlarmsFlow(): Flow<List<AlarmEntity>>
 
+    @Query("SELECT * FROM alarms")
+    suspend fun getAllAlarmsList(): List<AlarmEntity>
+
     @Query("SELECT * FROM alarms WHERE isEnabled = 1 AND isDismissed = 0 ORDER BY triggerTimeMillis ASC")
     fun getActiveUpcomingAlarmsFlow(): Flow<List<AlarmEntity>>
 
@@ -56,4 +59,22 @@ interface AlarmDao {
 
     @Query("UPDATE alarms SET currentRingCount = :count WHERE id = :id")
     suspend fun updateRingCount(id: Long, count: Int)
+
+    @Query("UPDATE alarms SET snoozeDurationMinutes = :snoozeMinutes")
+    suspend fun updateAllAlarmsSnooze(snoozeMinutes: Int)
+
+    @Query("UPDATE alarms SET maxReAlarmRings = :maxRings")
+    suspend fun updateAllAlarmsMaxReRings(maxRings: Int)
+
+    @Query("UPDATE alarms SET reAlarmGapMinutes = :gapMinutes")
+    suspend fun updateAllAlarmsReAlarmGap(gapMinutes: Int)
+
+    @Query("UPDATE alarms SET toneTitle = :toneTitle, toneUri = :toneUri")
+    suspend fun updateAllAlarmsTone(toneTitle: String, toneUri: String?)
+
+    @Query("UPDATE alarms SET volume = :volume")
+    suspend fun updateAllAlarmsVolume(volume: Float)
+
+    @Query("UPDATE alarms SET vibrate = :vibrate")
+    suspend fun updateAllAlarmsVibrate(vibrate: Boolean)
 }

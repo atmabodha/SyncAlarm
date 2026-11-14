@@ -435,9 +435,9 @@ fun AlarmCard(
                         )
                     }
 
-                    // Recurrence Summary
+                    // Recurrence & Snooze Summary
                     Text(
-                        text = alarm.getRepeatDaysSummary(),
+                        text = "${alarm.getRepeatDaysSummary()} • Snooze ${alarm.snoozeDurationMinutes}m",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary,
                         maxLines = 2,

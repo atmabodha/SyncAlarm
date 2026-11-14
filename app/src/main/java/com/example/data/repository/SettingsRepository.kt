@@ -103,4 +103,20 @@ class SettingsRepository(context: Context) {
         val serialized = current.joinToString("\n") { "${it.title}||${it.uri}" }
         prefs.edit().putString("custom_mp3_tones", serialized).apply()
     }
+
+    fun hasCustomSnooze(alarmId: Long): Boolean {
+        return prefs.getBoolean("custom_snooze_alarm_$alarmId", false)
+    }
+
+    fun setCustomSnooze(alarmId: Long, isCustom: Boolean) {
+        prefs.edit().putBoolean("custom_snooze_alarm_$alarmId", isCustom).apply()
+    }
+
+    fun isInitialSnoozeMigrationDone(): Boolean {
+        return prefs.getBoolean("initial_snooze_sync_done", false)
+    }
+
+    fun markInitialSnoozeMigrationDone() {
+        prefs.edit().putBoolean("initial_snooze_sync_done", true).apply()
+    }
 }

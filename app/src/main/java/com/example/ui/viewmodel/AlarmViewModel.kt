@@ -58,6 +58,9 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         refreshSoundOptions()
+        viewModelScope.launch(Dispatchers.IO) {
+            alarmRepo.syncDefaultSnoozeOnStartupIfNeeded()
+        }
     }
 
     fun refreshSoundOptions() {
@@ -173,7 +176,11 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updateSettings(newSettings: AppSettings) {
+        val oldSettings = settingsRepo.settingsFlow.value
         settingsRepo.updateSettings(newSettings)
+        viewModelScope.launch(Dispatchers.IO) {
+            alarmRepo.applySettingsToExistingAlarms(oldSettings, newSettings)
+        }
     }
 
     fun playTonePreview(context: Context, toneTitle: String?, toneUri: String? = null, volume: Float) {

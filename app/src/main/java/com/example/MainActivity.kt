@@ -328,6 +328,7 @@ fun MainAppContent(viewModel: AlarmViewModel) {
             if (showAddEditDialog) {
                 AddEditAlarmDialog(
                     initialAlarm = editingAlarm,
+                    defaultSettings = settings,
                     soundOptions = soundOptions,
                     onDismissRequest = {
                         showAddEditDialog = false

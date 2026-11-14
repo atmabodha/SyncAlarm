@@ -88,6 +88,7 @@ import java.util.Locale
 @Composable
 fun AddEditAlarmDialog(
     initialAlarm: AlarmEntity? = null,
+    defaultSettings: com.example.data.repository.AppSettings = com.example.data.repository.AppSettings(),
     soundOptions: List<AlarmSoundOption>,
     onDismissRequest: () -> Unit,
     onSave: (AlarmEntity) -> Unit,
@@ -98,16 +99,16 @@ fun AddEditAlarmDialog(
 ) {
     val context = LocalContext.current
 
-    var hour by remember { mutableIntStateOf(initialAlarm?.hour ?: 8) }
-    var minute by remember { mutableIntStateOf(initialAlarm?.minute ?: 0) }
-    var title by remember { mutableStateOf(initialAlarm?.title ?: "Wake Up") }
-    var scheduleType by remember {
+    var hour by remember(initialAlarm) { mutableIntStateOf(initialAlarm?.hour ?: 8) }
+    var minute by remember(initialAlarm) { mutableIntStateOf(initialAlarm?.minute ?: 0) }
+    var title by remember(initialAlarm) { mutableStateOf(initialAlarm?.title ?: "Wake Up") }
+    var scheduleType by remember(initialAlarm) {
         mutableStateOf(initialAlarm?.scheduleType ?: AlarmEntity.SCHEDULE_TYPE_RECURRING_DAYS)
     }
-    var repeatDays by remember {
+    var repeatDays by remember(initialAlarm) {
         mutableIntStateOf(initialAlarm?.repeatDays ?: 0)
     }
-    var specificDateMillis by remember {
+    var specificDateMillis by remember(initialAlarm) {
         mutableStateOf<Long?>(
             initialAlarm?.specificDateMillis
                 ?: initialAlarm?.triggerTimeMillis?.takeIf { it > 0L }
@@ -115,13 +116,27 @@ fun AddEditAlarmDialog(
                 ?: (System.currentTimeMillis() + 86400000L)
         )
     }
-    var volume by remember { mutableFloatStateOf(initialAlarm?.volume ?: 0.85f) }
-    var vibrate by remember { mutableStateOf(initialAlarm?.vibrate ?: true) }
-    var toneTitle by remember { mutableStateOf(initialAlarm?.toneTitle ?: "Gentle Digital Chime") }
-    var toneUri by remember { mutableStateOf<String?>(initialAlarm?.toneUri) }
-    var snoozeMinutes by remember { mutableIntStateOf(initialAlarm?.snoozeDurationMinutes ?: 10) }
-    var maxReAlarmRings by remember { mutableIntStateOf(initialAlarm?.maxReAlarmRings ?: 3) }
-    var reAlarmGapMinutes by remember { mutableIntStateOf(initialAlarm?.reAlarmGapMinutes ?: 5) }
+    var volume by remember(initialAlarm, defaultSettings.defaultVolume) {
+        mutableFloatStateOf(initialAlarm?.volume ?: defaultSettings.defaultVolume)
+    }
+    var vibrate by remember(initialAlarm, defaultSettings.vibrateEnabled) {
+        mutableStateOf(initialAlarm?.vibrate ?: defaultSettings.vibrateEnabled)
+    }
+    var toneTitle by remember(initialAlarm, defaultSettings.defaultToneTitle) {
+        mutableStateOf(initialAlarm?.toneTitle ?: defaultSettings.defaultToneTitle)
+    }
+    var toneUri by remember(initialAlarm, defaultSettings.defaultToneUri) {
+        mutableStateOf<String?>(initialAlarm?.toneUri ?: defaultSettings.defaultToneUri)
+    }
+    var snoozeMinutes by remember(initialAlarm, defaultSettings.defaultSnoozeMinutes) {
+        mutableIntStateOf(initialAlarm?.snoozeDurationMinutes ?: defaultSettings.defaultSnoozeMinutes)
+    }
+    var maxReAlarmRings by remember(initialAlarm, defaultSettings.maxReAlarmRings) {
+        mutableIntStateOf(initialAlarm?.maxReAlarmRings ?: defaultSettings.maxReAlarmRings)
+    }
+    var reAlarmGapMinutes by remember(initialAlarm, defaultSettings.reAlarmGapMinutes) {
+        mutableIntStateOf(initialAlarm?.reAlarmGapMinutes ?: defaultSettings.reAlarmGapMinutes)
+    }
     var isPreviewing by remember { mutableStateOf(false) }
 
     DisposableEffect(Unit) {
@@ -521,19 +536,31 @@ fun AddEditAlarmDialog(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // Snooze Interval Chips
+                // Snooze Interval Chips (Per-Alarm Override)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("Snooze:", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                    Column {
+                        Text("Snooze (this alarm):", style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+                        Text(
+                            text = if (snoozeMinutes != defaultSettings.defaultSnoozeMinutes) {
+                                "Custom (${snoozeMinutes}m) • App default is ${defaultSettings.defaultSnoozeMinutes}m"
+                            } else {
+                                "Using app default (${defaultSettings.defaultSnoozeMinutes}m)"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = PrimaryIndigo
+                        )
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf(5, 10, 15).forEach { m ->
                             FilterChip(
                                 selected = snoozeMinutes == m,
                                 onClick = { snoozeMinutes = m },
-                                label = { Text("${m}m", fontSize = 12.sp) }
+                                label = { Text("${m}m", fontSize = 12.sp) },
+                                modifier = Modifier.testTag("alarm_snooze_chip_$m")
                             )
                         }
                     }

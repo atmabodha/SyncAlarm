@@ -44,6 +44,9 @@ class AlarmRepository(private val context: Context) {
             dao.insertAlarm(alarmToSave)
         }
 
+        val currentDefaultSnooze = settingsRepo.settingsFlow.value.defaultSnoozeMinutes
+        settingsRepo.setCustomSnooze(id, alarmToSave.snoozeDurationMinutes != currentDefaultSnooze)
+
         scheduler.scheduleAlarm(alarmToSave.copy(id = id))
         return id
     }
@@ -100,6 +103,7 @@ class AlarmRepository(private val context: Context) {
 
     suspend fun deleteAlarm(alarm: AlarmEntity) {
         scheduler.cancelAlarm(alarm.id)
+        settingsRepo.setCustomSnooze(alarm.id, false)
         dao.deleteAlarm(alarm)
     }
 
@@ -184,5 +188,46 @@ class AlarmRepository(private val context: Context) {
 
         scheduler.scheduleAlarm(alarm.copy(id = id))
         return id
+    }
+
+    suspend fun syncDefaultSnoozeOnStartupIfNeeded() {
+        if (!settingsRepo.isInitialSnoozeMigrationDone()) {
+            val defaultSnooze = settingsRepo.settingsFlow.value.defaultSnoozeMinutes
+            val all = dao.getAllAlarmsList()
+            all.forEach { alarm ->
+                if (!settingsRepo.hasCustomSnooze(alarm.id) && alarm.snoozeDurationMinutes != defaultSnooze) {
+                    dao.updateAlarm(alarm.copy(snoozeDurationMinutes = defaultSnooze))
+                }
+            }
+            settingsRepo.markInitialSnoozeMigrationDone()
+        }
+    }
+
+    suspend fun applySettingsToExistingAlarms(oldSettings: AppSettings, newSettings: AppSettings) {
+        if (oldSettings.defaultSnoozeMinutes != newSettings.defaultSnoozeMinutes) {
+            val all = dao.getAllAlarmsList()
+            all.forEach { alarm ->
+                if (!settingsRepo.hasCustomSnooze(alarm.id)) {
+                    dao.updateAlarm(alarm.copy(snoozeDurationMinutes = newSettings.defaultSnoozeMinutes))
+                }
+            }
+        }
+        if (oldSettings.maxReAlarmRings != newSettings.maxReAlarmRings) {
+            dao.updateAllAlarmsMaxReRings(newSettings.maxReAlarmRings)
+        }
+        if (oldSettings.reAlarmGapMinutes != newSettings.reAlarmGapMinutes) {
+            dao.updateAllAlarmsReAlarmGap(newSettings.reAlarmGapMinutes)
+        }
+        if (oldSettings.defaultToneTitle != newSettings.defaultToneTitle ||
+            oldSettings.defaultToneUri != newSettings.defaultToneUri
+        ) {
+            dao.updateAllAlarmsTone(newSettings.defaultToneTitle, newSettings.defaultToneUri)
+        }
+        if (oldSettings.defaultVolume != newSettings.defaultVolume) {
+            dao.updateAllAlarmsVolume(newSettings.defaultVolume)
+        }
+        if (oldSettings.vibrateEnabled != newSettings.vibrateEnabled) {
+            dao.updateAllAlarmsVibrate(newSettings.vibrateEnabled)
+        }
     }
 }
