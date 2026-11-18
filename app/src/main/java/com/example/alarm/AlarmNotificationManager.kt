@@ -18,9 +18,10 @@ import com.example.data.model.CalendarMeeting
 object AlarmNotificationManager {
 
     private const val LEGACY_CHANNEL_RINGING_ID = "sync_alarm_ringing_channel"
+    private const val LEGACY_CHANNEL_PROMPTS_ID = "sync_alarm_calendar_prompts_channel"
     const val CHANNEL_RINGING_ID = "sync_alarm_ringing_silent_v2"
     const val CHANNEL_UPCOMING_ID = "sync_alarm_upcoming_channel"
-    const val CHANNEL_PROMPTS_ID = "sync_alarm_calendar_prompts_channel"
+    const val CHANNEL_PROMPTS_ID = "sync_alarm_calendar_prompts_high_v3"
     const val CHANNEL_DELETED_MEETING_ID = "sync_alarm_deleted_meeting_alert_v3"
 
     const val EXTRA_ALARM_ID = "extra_alarm_id"
@@ -44,8 +45,9 @@ object AlarmNotificationManager {
             val notificationManager =
                 context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-            // Remove legacy channel that had a default notification sound attached
+            // Remove legacy channels
             notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_RINGING_ID)
+            notificationManager.deleteNotificationChannel(LEGACY_CHANNEL_PROMPTS_ID)
 
             // 1. Ringing Channel (Silent channel because AlarmAudioService plays the selected tone via MediaPlayer)
             val ringingChannel = NotificationChannel(
@@ -70,16 +72,16 @@ object AlarmNotificationManager {
                 setShowBadge(false)
             }
 
-            // 3. Calendar Meeting Prompts Channel
+            // 3. Calendar Meeting Prompts Channel (High importance so new meeting alarm prompts pop up reliably)
             val promptsChannel = NotificationChannel(
                 CHANNEL_PROMPTS_ID,
                 "Calendar Meeting Alarms",
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Interactive notifications to schedule alarms for detected meetings"
-                enableVibration(false)
-                setSound(null, null)
+                description = "Interactive notifications to schedule alarms for newly detected Google Calendar meetings"
+                enableVibration(true)
                 setShowBadge(true)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             }
 
             // 4. Deleted Calendar Meeting Alert Channel (High importance so user is immediately asked to delete or keep alarm)
@@ -103,9 +105,14 @@ object AlarmNotificationManager {
     /**
      * Shows notification prompting the user to add an alarm for a new meeting:
      * Offers 2 options: 5 mins before or 10 mins before (plus Skip).
+     * Returns true if the notification was posted to the system notification manager.
      */
-    fun postMeetingPromptNotification(context: Context, meeting: CalendarMeeting) {
+    fun postMeetingPromptNotification(context: Context, meeting: CalendarMeeting): Boolean {
+        createNotificationChannels(context)
         val notifManager = NotificationManagerCompat.from(context)
+        if (!notifManager.areNotificationsEnabled()) {
+            return false
+        }
         val notifId = (20000 + (meeting.id % 10000)).toInt()
 
         // Action 1: 5 Mins Before
@@ -144,6 +151,7 @@ object AlarmNotificationManager {
         val intentSkip = Intent(context, AlarmActionReceiver::class.java).apply {
             action = ACTION_IGNORE_CALENDAR_PROMPT
             putExtra(EXTRA_EVENT_ID, meeting.id)
+            putExtra(EXTRA_EVENT_START_TIME, meeting.startTimeMillis)
         }
         val pIntentSkip = PendingIntent.getBroadcast(
             context,
@@ -173,8 +181,10 @@ object AlarmNotificationManager {
                     "Meeting: ${meeting.title}\nStarts: ${meeting.getFormattedStartTime()}$recurrenceInfo\nChoose alarm gap before meeting:"
                 )
             )
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .setSilent(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setOnlyAlertOnce(true)
             .setContentIntent(pContentIntent)
             .setAutoCancel(true)
             .addAction(android.R.drawable.ic_lock_idle_alarm, "5 Mins Before", pIntent5m)
@@ -182,10 +192,11 @@ object AlarmNotificationManager {
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Skip", pIntentSkip)
             .build()
 
-        try {
+        return try {
             notifManager.notify(notifId, notification)
+            true
         } catch (_: SecurityException) {
-            // Handled when permission is not granted yet
+            false
         }
     }
 

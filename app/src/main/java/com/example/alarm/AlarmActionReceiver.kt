@@ -196,9 +196,10 @@ class AlarmActionReceiver : BroadcastReceiver() {
 
             AlarmNotificationManager.ACTION_IGNORE_CALENDAR_PROMPT -> {
                 val eventId = intent.getLongExtra(AlarmNotificationManager.EXTRA_EVENT_ID, -1L)
+                val startTime = intent.getLongExtra(AlarmNotificationManager.EXTRA_EVENT_START_TIME, -1L)
                 if (eventId != -1L) {
                     AlarmNotificationManager.cancelMeetingPromptNotification(context, eventId)
-                    SettingsRepository(context).markMeetingPrompted(eventId)
+                    SettingsRepository(context).markMeetingPrompted(eventId, startTime)
                 }
             }
 

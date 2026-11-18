@@ -57,20 +57,40 @@ class SettingsRepository(context: Context) {
         _settingsFlow.value = newSettings
     }
 
-    fun isMeetingPrompted(eventId: Long, startTimeMillis: Long = -1L): Boolean {
-        val wasPrompted = prefs.getBoolean("prompted_event_$eventId", false)
+    fun isMeetingPrompted(eventId: Long, startTimeMillis: Long = -1L, title: String? = null): Boolean {
+        val wasPrompted = prefs.getBoolean("prompted_event_v3_$eventId", false)
         if (!wasPrompted) return false
         if (startTimeMillis <= 0L) return true
-        val promptedStart = prefs.getLong("prompted_event_start_$eventId", -1L)
-        return promptedStart == startTimeMillis
+        val promptedStart = prefs.getLong("prompted_event_start_v3_$eventId", -1L)
+        if (promptedStart <= 0L) return true
+        val sameTime = kotlin.math.abs(promptedStart - startTimeMillis) < 60_000L
+        if (!sameTime) return false
+        if (!title.isNullOrBlank()) {
+            val prevTitle = prefs.getString("prompted_event_title_v3_$eventId", null)
+            if (prevTitle == "Meeting" && title != "Meeting") {
+                return false
+            }
+        }
+        return true
     }
 
-    fun markMeetingPrompted(eventId: Long, startTimeMillis: Long = -1L) {
-        val editor = prefs.edit().putBoolean("prompted_event_$eventId", true)
+    fun markMeetingPrompted(eventId: Long, startTimeMillis: Long = -1L, title: String? = null) {
+        val editor = prefs.edit().putBoolean("prompted_event_v3_$eventId", true)
         if (startTimeMillis > 0L) {
-            editor.putLong("prompted_event_start_$eventId", startTimeMillis)
+            editor.putLong("prompted_event_start_v3_$eventId", startTimeMillis)
+        }
+        if (!title.isNullOrBlank()) {
+            editor.putString("prompted_event_title_v3_$eventId", title)
         }
         editor.apply()
+    }
+
+    fun clearMeetingPrompted(eventId: Long) {
+        prefs.edit()
+            .remove("prompted_event_v3_$eventId")
+            .remove("prompted_event_start_v3_$eventId")
+            .remove("prompted_event_title_v3_$eventId")
+            .apply()
     }
 
     fun isDeletionPrompted(alarmId: Long): Boolean {

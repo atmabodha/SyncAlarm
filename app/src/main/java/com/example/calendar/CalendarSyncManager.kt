@@ -66,10 +66,13 @@ class CalendarSyncManager(private val context: Context) {
             val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
                 override fun onChange(selfChange: Boolean, uri: Uri?) {
                     super.onChange(selfChange, uri)
-                    // Fast 800ms debounce so deleting a meeting in Google Calendar raises the prompt notification almost immediately
+                    // Run at 800ms for immediate local changes and a follow-up pass at 3500ms
+                    // so delayed CalendarContract.Instances expansion (e.g. from laptop/web cloud sync) is caught
                     observerDebounceJob?.cancel()
                     observerDebounceJob = syncScope.launch {
                         delay(800L)
+                        syncCalendarEvents(forcePrompt = false)
+                        delay(2700L)
                         syncCalendarEvents(forcePrompt = false)
                     }
                 }
@@ -131,15 +134,23 @@ class CalendarSyncManager(private val context: Context) {
 
     fun requestSystemCalendarSync() {
         val now = System.currentTimeMillis()
-        if (now - lastManualSyncRequestMillis < 60_000L) {
+        if (now - lastManualSyncRequestMillis < 45_000L) {
             return
         }
         lastManualSyncRequestMillis = now
         try {
             val extras = android.os.Bundle().apply {
                 putBoolean(android.content.ContentResolver.SYNC_EXTRAS_MANUAL, true)
+                putBoolean(android.content.ContentResolver.SYNC_EXTRAS_EXPEDITED, true)
             }
             android.content.ContentResolver.requestSync(null, CalendarContract.AUTHORITY, extras)
+            // Schedule follow-up checks after requesting cloud sync so newly synced laptop/web events trigger notifications
+            syncScope.launch {
+                delay(2500L)
+                syncCalendarEvents(forcePrompt = false)
+                delay(3500L)
+                syncCalendarEvents(forcePrompt = false)
+            }
         } catch (e: Exception) {
             Log.w("CalendarSyncManager", "Could not request system calendar sync: ${e.message}")
         }
@@ -424,29 +435,48 @@ class CalendarSyncManager(private val context: Context) {
                     if (deletedFlag != 0) return
                     if (statusFlag == CalendarContract.Events.STATUS_CANCELED) return
                     if (selfAttendeeStatus == CalendarContract.Attendees.ATTENDEE_STATUS_DECLINED) return
-                    val effectiveEnd = if (end > start) end else start + 1800_000L
-                    if (effectiveEnd < now - (15L * 60 * 1000L) && start < now - (15L * 60 * 1000L)) return
-                    if (start > ninetyDaysLater) return
                     if (isUntimedOrAllDayEvent(allDayFlag, start, end, eventTz, durationStr)) return
+
+                    val rruleBits = parseRRuleToDaysBitmask(rruleStr, start)
+                    var resolvedStart = start
+                    var effectiveEnd = if (end > start) end else start + 1800_000L
+
+                    // If a recurring event in the fallback Events table has its initial DTSTART earlier today/in the past
+                    // before CalendarContract.Instances finishes expanding, advance it to its next upcoming occurrence
+                    if (isFromFallbackEventsTable && rruleBits > 0 && effectiveEnd < now - (15L * 60 * 1000L)) {
+                        val calStart = Calendar.getInstance().apply { timeInMillis = start }
+                        val nextStart = AlarmScheduler.computeNextTriggerTime(
+                            hour = calStart.get(Calendar.HOUR_OF_DAY),
+                            minute = calStart.get(Calendar.MINUTE),
+                            scheduleType = com.example.data.model.AlarmEntity.SCHEDULE_TYPE_RECURRING_DAYS,
+                            repeatDays = rruleBits,
+                            specificDateMillis = null
+                        )
+                        val durationMs = (effectiveEnd - start).coerceAtLeast(1800_000L)
+                        resolvedStart = nextStart
+                        effectiveEnd = nextStart + durationMs
+                    }
+
+                    if (effectiveEnd < now - (15L * 60 * 1000L) && resolvedStart < now - (15L * 60 * 1000L)) return
+                    if (resolvedStart > ninetyDaysLater) return
 
                     if (isFromFallbackEventsTable && seenEventIdsFromInstances.contains(id)) return
 
-                    val instanceKey = "${id}_${start / 60000L}"
+                    val instanceKey = "${id}_${resolvedStart / 60000L}"
                     if (!seenInstanceKeys.add(instanceKey)) return
 
                     if (!isFromFallbackEventsTable) {
                         seenEventIdsFromInstances.add(id)
                     }
 
-                    val cal = Calendar.getInstance().apply { timeInMillis = start }
+                    val cal = Calendar.getInstance().apply { timeInMillis = resolvedStart }
                     val dayBit = com.example.data.model.AlarmEntity.calendarDayOfWeekToBit(cal.get(Calendar.DAY_OF_WEEK))
-                    val rruleBits = parseRRuleToDaysBitmask(rruleStr, start)
 
                     candidates.add(
                         RawCandidateOccurrence(
                             id = id,
                             title = title,
-                            start = start,
+                            start = resolvedStart,
                             end = effectiveEnd,
                             loc = loc,
                             desc = desc,
@@ -827,26 +857,44 @@ class CalendarSyncManager(private val context: Context) {
         meetings.sortBy { it.startTimeMillis }
 
         // Check for new or rescheduled timed meetings to prompt (never prompt for all-day / untimed entries)
-        // Only prompt for upcoming meetings starting within the next 48 hours (max 3 per pass) to avoid flooding system notifications
+        // Prompt across the entire 90-day meetings horizon so any meeting that appears in the Meetings tab
+        // (whether added from the phone app or synced from a laptop browser, and whether today or weeks ahead)
+        // reliably triggers an interactive 5m/10m alarm notification.
         val settings = settingsRepo.settingsFlow.value
+        val previousMeetingIds = _meetingsFlow.value.map { it.id }.toSet()
         if (settings.promptCalendarMeetings) {
             val nowMs = System.currentTimeMillis()
-            val promptHorizonMs = nowMs + (48L * 60 * 60 * 1000L)
+            val promptHorizonMs = nowMs + (90L * 24 * 60 * 60 * 1000L)
             val promptedEventIdsInPass = mutableSetOf<Long>()
             var notificationsPostedInPass = 0
-            for (meeting in meetings) {
-                if (notificationsPostedInPass >= 3) break
-                if (meeting.startTimeMillis in (nowMs + 1)..promptHorizonMs && !meeting.isAllDay) {
+
+            // Prioritize newly added meetings (not in previous snapshot) first so new events are never starved
+            val candidateMeetingsForPrompt = meetings.sortedWith(
+                compareBy<CalendarMeeting> { it.id in previousMeetingIds }
+                    .thenBy { it.startTimeMillis }
+            )
+
+            for (meeting in candidateMeetingsForPrompt) {
+                if (notificationsPostedInPass >= 8) break
+                val isUpcomingOrJustStarted = meeting.startTimeMillis in (nowMs - 15L * 60 * 1000L)..promptHorizonMs ||
+                    (meeting.endTimeMillis > nowMs && meeting.startTimeMillis <= promptHorizonMs)
+                if (isUpcomingOrJustStarted && !meeting.isAllDay) {
                     if (!promptedEventIdsInPass.add(meeting.id)) continue
 
-                    val alreadyPromptedForThisTime = settingsRepo.isMeetingPrompted(meeting.id, meeting.startTimeMillis)
+                    val alreadyPromptedForThisTime = settingsRepo.isMeetingPrompted(
+                        eventId = meeting.id,
+                        startTimeMillis = meeting.startTimeMillis,
+                        title = meeting.title
+                    )
                     val hasAlarm = db.alarmDao().getAlarmByCalendarEventAndStartTime(meeting.id, meeting.startTimeMillis) != null ||
                         db.alarmDao().getAlarmByCalendarEventId(meeting.id) != null
                     if (!alreadyPromptedForThisTime && !hasAlarm) {
                         Log.d("CalendarSyncManager", "Timed meeting detected! Posting 5m/10m prompt: ${meeting.title} at ${meeting.getFormattedStartTime()}")
-                        AlarmNotificationManager.postMeetingPromptNotification(context, meeting)
-                        settingsRepo.markMeetingPrompted(meeting.id, meeting.startTimeMillis)
-                        notificationsPostedInPass++
+                        val posted = AlarmNotificationManager.postMeetingPromptNotification(context, meeting)
+                        if (posted) {
+                            settingsRepo.markMeetingPrompted(meeting.id, meeting.startTimeMillis, meeting.title)
+                            notificationsPostedInPass++
+                        }
                     }
                 }
             }
