@@ -14,6 +14,9 @@ class AlarmReceiver : BroadcastReceiver() {
 
         if (alarmId == -1L) return
 
+        // Cancel any "Upcoming Alarm (Dismiss)" notification now that the alarm is actively ringing
+        AlarmNotificationManager.cancelUpcomingAlarmNotification(context, alarmId)
+
         // 1. Start Audio Foreground Service
         val serviceIntent = Intent(context, AlarmAudioService::class.java).apply {
             putExtra(AlarmNotificationManager.EXTRA_ALARM_ID, alarmId)

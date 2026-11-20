@@ -75,12 +75,28 @@ class AlarmRingingActivity : ComponentActivity() {
 
     private var currentAlarmId by androidx.compose.runtime.mutableLongStateOf(-1L)
 
+    private val finishReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == AlarmActionReceiver.ACTION_FINISH_RINGING_ACTIVITY) {
+                finishAndRemoveTask()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         turnScreenOnOverLockscreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
         currentAlarmId = intent?.getLongExtra(AlarmNotificationManager.EXTRA_ALARM_ID, -1L) ?: -1L
+
+        val filter = android.content.IntentFilter(AlarmActionReceiver.ACTION_FINISH_RINGING_ACTIVITY)
+        androidx.core.content.ContextCompat.registerReceiver(
+            this,
+            finishReceiver,
+            filter,
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+        )
 
         setContent {
             SyncAlarmTheme {
@@ -99,6 +115,9 @@ class AlarmRingingActivity : ComponentActivity() {
                 AlarmRingingScreen(
                     alarm = alarm,
                     onDismiss = {
+                        AlarmNotificationManager.cancelUpcomingAlarmNotification(applicationContext, alarmId)
+                        androidx.core.app.NotificationManagerCompat.from(applicationContext)
+                            .cancel(AlarmAudioService.NOTIFICATION_ID)
                         val dismissIntent = Intent(this@AlarmRingingActivity, AlarmActionReceiver::class.java).apply {
                             action = AlarmNotificationManager.ACTION_DISMISS_ALARM
                             putExtra(AlarmNotificationManager.EXTRA_ALARM_ID, alarmId)
@@ -107,6 +126,9 @@ class AlarmRingingActivity : ComponentActivity() {
                         finishAndRemoveTask()
                     },
                     onSnooze = {
+                        AlarmNotificationManager.cancelUpcomingAlarmNotification(applicationContext, alarmId)
+                        androidx.core.app.NotificationManagerCompat.from(applicationContext)
+                            .cancel(AlarmAudioService.NOTIFICATION_ID)
                         val snoozeIntent = Intent(this@AlarmRingingActivity, AlarmActionReceiver::class.java).apply {
                             action = AlarmNotificationManager.ACTION_SNOOZE_ALARM
                             putExtra(AlarmNotificationManager.EXTRA_ALARM_ID, alarmId)
@@ -117,6 +139,13 @@ class AlarmRingingActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onDestroy() {
+        try {
+            unregisterReceiver(finishReceiver)
+        } catch (_: Exception) {}
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {

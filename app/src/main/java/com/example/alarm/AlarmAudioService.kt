@@ -42,6 +42,9 @@ class AlarmAudioService : Service() {
             return START_NOT_STICKY
         }
 
+        // Cancel any upcoming-alarm notification now that this alarm is ringing
+        AlarmNotificationManager.cancelUpcomingAlarmNotification(applicationContext, alarmId)
+
         // Stop any existing playback/timer before starting new alarm audio
         startJob?.cancel()
         stopAudio()
@@ -268,15 +271,16 @@ class AlarmAudioService : Service() {
                 resetOrAdvanceAlarm(db, alarm)
             }
 
-            stopAudio()
             try {
                 stopForeground(STOP_FOREGROUND_REMOVE)
             } catch (_: Exception) {}
+            stopAudio()
             stopSelf()
         }
     }
 
     private suspend fun resetOrAdvanceAlarm(db: AppDatabase, alarm: AlarmEntity) {
+        AlarmNotificationManager.cancelUpcomingAlarmNotification(applicationContext, alarm.id)
         if (alarm.scheduleType == AlarmEntity.SCHEDULE_TYPE_RECURRING_DAYS && alarm.repeatDays > 0) {
             val nextTrigger = AlarmScheduler.computeNextTriggerTime(
                 hour = alarm.hour,
@@ -293,7 +297,8 @@ class AlarmAudioService : Service() {
             db.alarmDao().updateAlarm(advanced)
             AlarmScheduler(applicationContext).scheduleAlarm(advanced)
         } else {
-            // Disable one-time / calendar alarm
+            // Disable one-time / calendar alarm and clear any scheduled pending intents or notifications
+            AlarmScheduler(applicationContext).cancelAlarm(alarm.id)
             db.alarmDao().setAlarmEnabled(alarm.id, false)
         }
     }
@@ -324,10 +329,10 @@ class AlarmAudioService : Service() {
 
     override fun onDestroy() {
         startJob?.cancel()
-        stopAudio()
         try {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } catch (_: Exception) {}
+        stopAudio()
         super.onDestroy()
     }
 

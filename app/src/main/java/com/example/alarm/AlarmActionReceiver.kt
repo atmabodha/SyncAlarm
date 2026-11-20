@@ -24,19 +24,28 @@ class AlarmActionReceiver : BroadcastReceiver() {
         when (action) {
             AlarmNotificationManager.ACTION_DISMISS_ALARM -> {
                 val alarmId = intent.getLongExtra(AlarmNotificationManager.EXTRA_ALARM_ID, -1L)
-                stopAudioService(context)
+                stopAudioService(context, alarmId)
                 if (alarmId != -1L) {
+                    AlarmNotificationManager.cancelUpcomingAlarmNotification(context, alarmId)
                     CoroutineScope(Dispatchers.IO).launch {
-                        val alarm = db.alarmDao().getAlarmById(alarmId) ?: return@launch
-                        advanceOrDisableAlarm(db, scheduler, alarm)
+                        val alarm = db.alarmDao().getAlarmById(alarmId)
+                        if (alarm != null) {
+                            advanceOrDisableAlarm(context, db, scheduler, alarm)
+                        } else {
+                            scheduler.cancelAlarm(alarmId)
+                        }
+                        // Ensure both foreground ringing and upcoming dismiss notifications are cleared
+                        androidx.core.app.NotificationManagerCompat.from(context).cancel(AlarmAudioService.NOTIFICATION_ID)
+                        AlarmNotificationManager.cancelUpcomingAlarmNotification(context, alarmId)
                     }
                 }
             }
 
             AlarmNotificationManager.ACTION_SNOOZE_ALARM -> {
                 val alarmId = intent.getLongExtra(AlarmNotificationManager.EXTRA_ALARM_ID, -1L)
-                stopAudioService(context)
+                stopAudioService(context, alarmId)
                 if (alarmId != -1L) {
+                    AlarmNotificationManager.cancelUpcomingAlarmNotification(context, alarmId)
                     CoroutineScope(Dispatchers.IO).launch {
                         val alarm = db.alarmDao().getAlarmById(alarmId) ?: return@launch
                         val snoozeMillis = alarm.snoozeDurationMinutes * 60 * 1000L
@@ -257,13 +266,28 @@ class AlarmActionReceiver : BroadcastReceiver() {
         }
     }
 
-    private fun stopAudioService(context: Context) {
+    private fun stopAudioService(context: Context, alarmId: Long = -1L) {
         val stopIntent = Intent(context, AlarmAudioService::class.java)
         context.stopService(stopIntent)
         androidx.core.app.NotificationManagerCompat.from(context).cancel(AlarmAudioService.NOTIFICATION_ID)
+        if (alarmId != -1L) {
+            AlarmNotificationManager.cancelUpcomingAlarmNotification(context, alarmId)
+        }
+        val finishActivityIntent = Intent(ACTION_FINISH_RINGING_ACTIVITY).apply {
+            setPackage(context.packageName)
+            putExtra(AlarmNotificationManager.EXTRA_ALARM_ID, alarmId)
+        }
+        context.sendBroadcast(finishActivityIntent)
     }
 
-    private suspend fun advanceOrDisableAlarm(db: AppDatabase, scheduler: AlarmScheduler, alarm: AlarmEntity) {
+    private suspend fun advanceOrDisableAlarm(
+        context: Context,
+        db: AppDatabase,
+        scheduler: AlarmScheduler,
+        alarm: AlarmEntity
+    ) {
+        AlarmNotificationManager.cancelUpcomingAlarmNotification(context, alarm.id)
+        scheduler.cancelAlarm(alarm.id)
         if (alarm.scheduleType == AlarmEntity.SCHEDULE_TYPE_RECURRING_DAYS && alarm.repeatDays > 0) {
             val nextTrigger = AlarmScheduler.computeNextTriggerTime(
                 hour = alarm.hour,
@@ -282,5 +306,9 @@ class AlarmActionReceiver : BroadcastReceiver() {
         } else {
             db.alarmDao().setAlarmEnabled(alarm.id, false)
         }
+    }
+
+    companion object {
+        const val ACTION_FINISH_RINGING_ACTIVITY = "com.aistudio.syncalarm.ACTION_FINISH_RINGING_ACTIVITY"
     }
 }
